@@ -18,6 +18,7 @@ from mbti.models import (
     TopicSource,
     make_user_id,
 )
+from mbti.session_manager import SessionManager
 
 __all__ = [
     # 数据层
@@ -33,4 +34,6 @@ __all__ = [
     "TopicSource",
     # 工具
     "make_user_id",
+    # 会话管理
+    "SessionManager",
 ]
