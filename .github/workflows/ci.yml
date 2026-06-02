@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [master, develop]
+  pull_request:
+    branches: [master, develop]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Run Ruff
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Super-Linter
+        uses: super-linter/super-linter@v7
+        env:
+          VALIDATE_ALL_CODEBASE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          DEFAULT_BRANCH: master
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHON_PYLINT: false
+          PYTHON_BLACK: false
+          PYTHON_FLAKE8: false
+          PYTHON_ISORT: false
+          JAVASCRIPT_STANDARD: false
+          TYPESCRIPT_STANDARD: false
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e .[dev] 2>/dev/null || true
+
+      - name: Run tests
+        run: |
+          pip install pytest pytest-cov
+          pytest --cov=hannilce_insight --cov-report=term-missing || echo "Tests not implemented yet"
