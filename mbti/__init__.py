@@ -4,9 +4,14 @@
 模块结构：
     db.py            数据层：SQLite WAL 初始化与表管理
     models.py        模型层：Pydantic 数据模型
+    session_manager.py  会话管理：用户会话创建、查询、唤醒
+    topic_generator.py  话题生成：动态话题 + 内置话题池
+    quality_controller.py 质量控制：双层评分 + 滑动窗口封存
+    insight_skill.py 主入口：串联各模块，接 /MBTI 触发词
 """
 
 from mbti.db import init_db
+from mbti.insight_skill import InsightSkill, parse_trigger, run
 from mbti.models import (
     ConversationLog,
     Dimensions,
@@ -42,4 +47,8 @@ __all__ = [
     "TopicGenerator",
     # 质量控制
     "QualityController",
+    # 主入口
+    "InsightSkill",
+    "parse_trigger",
+    "run",
 ]

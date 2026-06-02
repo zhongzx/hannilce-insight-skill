@@ -137,6 +137,27 @@ class MBTIProfile(BaseModel):
         )
 
 
+    def to_summary(self) -> dict:
+        """返回摘要（用于 skill 输出和日志）。"""
+        return {
+            "user_id": self.user_id,
+            "name": self.name,
+            "mbti_type": self.final_type or "待推断",
+            "confidence": self.confidence,
+            "dimensions": {
+                "EI": self.dimensions.EI,
+                "SN": self.dimensions.SN,
+                "TF": self.dimensions.TF,
+                "JP": self.dimensions.JP,
+                "EI_letter": self.dimensions.EI_letter,
+                "SN_letter": self.dimensions.SN_letter,
+                "TF_letter": self.dimensions.TF_letter,
+                "JP_letter": self.dimensions.JP_letter,
+            },
+            "archived": bool(self.archived),
+        }
+
+
 # ---------------------------------------------------------------------------
 # ConversationLog
 # ---------------------------------------------------------------------------
