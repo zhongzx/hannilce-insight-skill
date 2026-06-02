@@ -18,7 +18,9 @@ from mbti.models import (
     TopicSource,
     make_user_id,
 )
+from mbti.quality_controller import QualityController
 from mbti.session_manager import SessionManager
+from mbti.topic_generator import TopicGenerator
 
 __all__ = [
     # 数据层
@@ -36,4 +38,8 @@ __all__ = [
     "make_user_id",
     # 会话管理
     "SessionManager",
+    # 话题生成
+    "TopicGenerator",
+    # 质量控制
+    "QualityController",
 ]
