@@ -1,0 +1,33 @@
+{
+  "logs": [
+    {
+      "timestamp": "2026-06-02T21:00:00+08:00",
+      "action": "scraping",
+      "sources": {
+        "huxiu": {
+          "status": "success",
+          "topic_count": 20,
+          "message": "成功采集虎嗅首页及快讯，共20条话题"
+        },
+        "36kr": {
+          "status": "success",
+          "topic_count": 23,
+          "message": "成功采集36氪快讯及热榜，共23条话题"
+        },
+        "toutiao": {
+          "status": "success",
+          "topic_count": 9,
+          "message": "成功采集今日头条热门话题，共9条话题"
+        },
+        "caixin": {
+          "status": "success",
+          "topic_count": 22,
+          "message": "成功采集财新滚动新闻及热点，共22条话题"
+        }
+      },
+      "total_topics": 82,
+      "overall_status": "success"
+    }
+  ],
+  "history": []
+}

@@ -1,0 +1,412 @@
+{
+  "timestamp": "2026-06-02T21:00:00+08:00",
+  "sources": {
+    "huxiu": {
+      "name": "虎嗅",
+      "url": "https://www.huxiu.com",
+      "status": "success",
+      "topics": [
+        {
+          "title": "京东"稳赚不赔"的生意经",
+          "category": "商业消费",
+          "type": "article"
+        },
+        {
+          "title": "联想急了",
+          "category": "前沿科技",
+          "type": "article"
+        },
+        {
+          "title": "智元和宇树的"暗战"愈演愈烈",
+          "category": "前沿科技",
+          "type": "article"
+        },
+        {
+          "title": "中央财政下达999亿育儿补贴补助资金",
+          "category": "快讯",
+          "type": "breaking"
+        },
+        {
+          "title": "黄仁勋联手宇树打造1.8米参考人形机器人",
+          "category": "快讯",
+          "type": "breaking"
+        },
+        {
+          "title": "腾讯云: DeepSeek-V4系列模型",
+          "category": "快讯",
+          "type": "breaking"
+        },
+        {
+          "title": "赛力斯与字节跳动联手打造新车",
+          "category": "快讯",
+          "type": "breaking"
+        },
+        {
+          "title": "Anthropic秘密申请IPO，一边抢跑一边防着OpenAI",
+          "category": "AI创投日报",
+          "type": "article"
+        },
+        {
+          "title": "最快本周五，OpenAI紧随SpaceX递招股书",
+          "category": "AI创投日报",
+          "type": "article"
+        },
+        {
+          "title": "AI巨无霸排队上市，会是美股"最后的狂欢"吗？",
+          "category": "AI创投日报",
+          "type": "article"
+        },
+        {
+          "title": "对话中国科学院院士禇君浩：摩尔定律有天花板",
+          "category": "观点",
+          "type": "article"
+        },
+        {
+          "title": "遍地开花的癌症血液检测，有多大用？",
+          "category": "健康",
+          "type": "article"
+        },
+        {
+          "title": "这位教授被嘲笑的那一天，改变了无数人的命运",
+          "category": "健康",
+          "type": "article"
+        },
+        {
+          "title": "全网讨论的"用脑卫生"，拯救不了焦虑的人",
+          "category": "健康",
+          "type": "article"
+        },
+        {
+          "title": "用户称轻信豆包退机票亏600，AI幻觉造成损失该谁买单？",
+          "category": "3C数码",
+          "type": "article"
+        },
+        {
+          "title": "苹果第一个AI硬件，还没发布就已经难产了",
+          "category": "3C数码",
+          "type": "article"
+        },
+        {
+          "title": "口碑过山车的"天王嫂"，不是第一个团综受害者",
+          "category": "游戏娱乐",
+          "type": "article"
+        },
+        {
+          "title": "未来最大的公司，可能没有员工",
+          "category": "观点",
+          "type": "opinion"
+        },
+        {
+          "title": "小红书这步棋，赌大了",
+          "category": "48小时热文",
+          "type": "article"
+        },
+        {
+          "title": "第一批赚到科技股钱的人，开始跑路了",
+          "category": "48小时热文",
+          "type": "article"
+        }
+      ]
+    },
+    "36kr": {
+      "name": "36氪",
+      "url": "https://36kr.com/newsflashes",
+      "status": "success",
+      "topics": [
+        {
+          "title": "热门中概股美股盘前普涨，理想汽车涨超7%",
+          "category": "股市",
+          "type": "newsflash"
+        },
+        {
+          "title": "国家发展改革委主任郑栅洁主持召开国有企业座谈会",
+          "category": "宏观",
+          "type": "newsflash"
+        },
+        {
+          "title": "富途回应内地存量业务整治：积极跟进落实要求",
+          "category": "公司",
+          "type": "newsflash"
+        },
+        {
+          "title": "美股大型科技股盘前涨跌不一，迈威尔科技涨超18%",
+          "category": "股市",
+          "type": "newsflash"
+        },
+        {
+          "title": "SpaceX正在向银行施压，要求获得有史以来最低的IPO费用率",
+          "category": "创投",
+          "type": "newsflash"
+        },
+        {
+          "title": "贵州茅台2025年度分红每股28.02元，共计派发350亿元",
+          "category": "公司",
+          "type": "newsflash"
+        },
+        {
+          "title": "露笑科技控股股东拟减持不超过1.75%",
+          "category": "公司",
+          "type": "newsflash"
+        },
+        {
+          "title": "IBM计划在未来五年向量子计算领域投资超过100亿美元",
+          "category": "科技",
+          "type": "newsflash"
+        },
+        {
+          "title": "中国电信控股子公司拟参与设立量子基金",
+          "category": "科技",
+          "type": "newsflash"
+        },
+        {
+          "title": "Meta全球升级青少年内容管控",
+          "category": "科技",
+          "type": "newsflash"
+        },
+        {
+          "title": "崔东树：本轮新能源车产销双向走强由多重因素共同助推",
+          "category": "汽车",
+          "type": "newsflash"
+        },
+        {
+          "title": "TCL科技拟以11亿元-12亿元回购公司股份",
+          "category": "公司",
+          "type": "newsflash"
+        },
+        {
+          "title": "春秋电子股价异常波动，提示炒作及下跌风险",
+          "category": "公司",
+          "type": "newsflash"
+        },
+        {
+          "title": "北京经开区召开太空算力企业座谈会",
+          "category": "科技",
+          "type": "newsflash"
+        },
+        {
+          "title": "英特尔陈立武：CPU需求持续增长，许多公司CEO来电要求更多供货",
+          "category": "科技",
+          "type": "newsflash"
+        },
+        {
+          "title": "豆包将在6月下旬正式付费",
+          "category": "热点",
+          "type": "hot"
+        },
+        {
+          "title": "韩国SK海力士工厂发生火灾",
+          "category": "热点",
+          "type": "hot"
+        },
+        {
+          "title": "宇树科技IPO过会，王兴兴身家或超140亿",
+          "category": "热点",
+          "type": "hot"
+        },
+        {
+          "title": "Anthropic抢先交表，冲击AI史上最大IPO",
+          "category": "热点",
+          "type": "hot"
+        },
+        {
+          "title": "iPhone 18 Pro新配色未发先火，苹果少有的硬件堆料",
+          "category": "科技",
+          "type": "article"
+        },
+        {
+          "title": "黄仁勋突袭英特尔AMD腹地，联手王兴兴",
+          "category": "科技",
+          "type": "article"
+        },
+        {
+          "title": "中产的夏天，正在戒掉「穷人的啤酒」？",
+          "category": "消费",
+          "type": "article"
+        },
+        {
+          "title": "山东诞生一家AI黑马",
+          "category": "创投",
+          "type": "article"
+        }
+      ]
+    },
+    "toutiao": {
+      "name": "今日头条",
+      "url": "https://so.toutiao.com/search?keyword=热门话题",
+      "status": "success",
+      "topics": [
+        {
+          "title": "端午假期出行性价比天花板，小众冷门目的地成新宠",
+          "category": "生活消费类",
+          "type": "hot_topic"
+        },
+        {
+          "title": "夏日"轻消费"走红，百元内快乐经济成年轻人主流",
+          "category": "生活消费类",
+          "type": "hot_topic"
+        },
+        {
+          "title": "多地优化中小学课后服务，新增素质类课程成关注焦点",
+          "category": "社会热点类",
+          "type": "hot_topic"
+        },
+        {
+          "title": "城市街头"便民休息角"普及",
+          "category": "社会热点类",
+          "type": "hot_topic"
+        },
+        {
+          "title": "六一连休3天纯享欢乐时光",
+          "category": "热门话题",
+          "type": "hot_topic"
+        },
+        {
+          "title": "生活的真谛：相伴到老不仅仅是爱情",
+          "category": "热门话题",
+          "type": "hot_topic"
+        },
+        {
+          "title": "街头互动采访",
+          "category": "小视频",
+          "type": "video"
+        },
+        {
+          "title": "国民关心关注的话题",
+          "category": "热门话题",
+          "type": "hot_topic"
+        },
+        {
+          "title": "抖音基础知识分享",
+          "category": "干货分享",
+          "type": "video"
+        }
+      ]
+    },
+    "caixin": {
+      "name": "财新",
+      "url": "https://www.caixin.com",
+      "status": "success",
+      "topics": [
+        {
+          "title": "中央巡视办原主任黎晓宏被查 曾在金融、纪检领域工作多年",
+          "category": "政经",
+          "type": "breaking"
+        },
+        {
+          "title": "哈根达斯中国门店易主 连锁茶饮柠季接手",
+          "category": "公司",
+          "type": "article"
+        },
+        {
+          "title": "2026年5月的美国经济，你能承受多大的认知失调",
+          "category": "观点",
+          "type": "opinion"
+        },
+        {
+          "title": "NBA名帅阿德尔曼：曾执教姚明，率火箭打出22连胜",
+          "category": "博客",
+          "type": "article"
+        },
+        {
+          "title": "金川国际资金流失事件：中资出海治理有哪些共性短板",
+          "category": "政经",
+          "type": "article"
+        },
+        {
+          "title": "盈利目标达成 多只银行理财提前终止",
+          "category": "金融",
+          "type": "article"
+        },
+        {
+          "title": "以军空袭黎巴嫩 特朗普斥内塔尼亚胡"疯了"",
+          "category": "世界",
+          "type": "breaking"
+        },
+        {
+          "title": "王喆：5月新经济指数微降，新能源车降幅较大",
+          "category": "数据通热点",
+          "type": "data"
+        },
+        {
+          "title": "人民币会进入单边升值状态吗",
+          "category": "市场",
+          "type": "article"
+        },
+        {
+          "title": "智谱拟科创板上市募资150亿元 港股市值摸高8800亿港元",
+          "category": "金融",
+          "type": "breaking"
+        },
+        {
+          "title": ""韬定律"行不行，拿芯片来说话",
+          "category": "观点",
+          "type": "opinion"
+        },
+        {
+          "title": "营商高复杂度扎堆拉美，中企出海如何应对",
+          "category": "政经",
+          "type": "article"
+        },
+        {
+          "title": "东北地区接连现强对流与大风 极端天气将持续影响各地",
+          "category": "图片",
+          "type": "news"
+        },
+        {
+          "title": "罕见热浪席卷法网：球员退赛、冷门频发",
+          "category": "视频",
+          "type": "video"
+        },
+        {
+          "title": "澳门加入多边央行数字货币桥 首批11家本地银行参与",
+          "category": "金融",
+          "type": "breaking"
+        },
+        {
+          "title": "谷歌为AI计划再融资800亿美元 AI巨头吸金赛白热化",
+          "category": "科技",
+          "type": "breaking"
+        },
+        {
+          "title": "上汽集团计划在西班牙投资建厂 多家车企寻求在欧洲本地化生产",
+          "category": "公司",
+          "type": "breaking"
+        },
+        {
+          "title": "特朗普被曝粗口怒斥以色列总理 以军对黎攻势拖宕美伊谈判",
+          "category": "世界",
+          "type": "breaking"
+        },
+        {
+          "title": "维权16年仍在路上 凯赛瀚霖知产大战启示录",
+          "category": "财新周刊",
+          "type": "feature"
+        },
+        {
+          "title": "阿里集团CTO吴泽明进入公司最高决策机构合伙人委员会",
+          "category": "公司",
+          "type": "article"
+        },
+        {
+          "title": "具身智能数据采集为何重要",
+          "category": "科技",
+          "type": "article"
+        },
+        {
+          "title": "再析"5·22"山西矿难背后利益链：黑面、黑工与黑钱",
+          "category": "政经",
+          "type": "feature"
+        }
+      ]
+    }
+  },
+  "summary": {
+    "total_topics": 82,
+    "sources_success": 4,
+    "sources_failed": 0,
+    "huxiu_count": 20,
+    "36kr_count": 23,
+    "toutiao_count": 9,
+    "caixin_count": 22
+  }
+}
