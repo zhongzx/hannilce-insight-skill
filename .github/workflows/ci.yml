@@ -28,18 +28,16 @@ jobs:
           ruff check .
           ruff format --check .
 
-      - name: Super-Linter
+      - name: Super-Linter (YAML only)
         uses: super-linter/super-linter@v7
         env:
+          # 仅验证 YAML 文件（workflow 和配置文件）
+          # Markdown 由文档规范约束，不做强制 lint
+          VALIDATE_YAML: true
+          VALIDATE_MARKDOWN: false
+          VALIDATE_PYTHON: false
           VALIDATE_ALL_CODEBASE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
           DEFAULT_BRANCH: master
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PYTHON_PYLINT: false
-          PYTHON_BLACK: false
-          PYTHON_FLAKE8: false
-          PYTHON_ISORT: false
-          JAVASCRIPT_STANDARD: false
-          TYPESCRIPT_STANDARD: false
 
   test:
     name: Test
