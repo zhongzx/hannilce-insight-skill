@@ -266,9 +266,7 @@ _DEFAULT_TYPE_DESC = {
 def _render_report(profile: MBTIProfile, round_count: int) -> str:
     """渲染 MBTI 分析报告。"""
     mbti_type = profile.final_type or "XXXX"
-    type_info = _MBTI_TYPE_DESCRIPTIONS.get(
-        mbti_type, _DEFAULT_TYPE_DESC
-    )
+    type_info = _MBTI_TYPE_DESCRIPTIONS.get(mbti_type, _DEFAULT_TYPE_DESC)
 
     def dim_info(dim_name: str, letter: str) -> tuple:
         info = _DIMENSION_INFO.get(dim_name, {}).get(letter, {})
@@ -397,9 +395,7 @@ class InsightSkill:
         # 构建唤醒上下文（新会话不返回，老会话返回）
         wakeup_context = ""
         if not is_new:
-            wakeup_context = self._sm.build_wakeup_context(
-                user_name, timestamp_iso
-            )
+            wakeup_context = self._sm.build_wakeup_context(user_name, timestamp_iso)
 
         return {
             "type": "next_topic",
@@ -470,9 +466,7 @@ class InsightSkill:
         profile = self._sm.update_dimensions(
             user_id=user_id,
             dimension=self._current_dimension or "EI",
-            score=(
-                semantic_score * 0.6 + token_score * 0.4
-            ),  # 综合评分更新维度
+            score=(semantic_score * 0.6 + token_score * 0.4),  # 综合评分更新维度
         )
 
         # 4. 检查是否应输出报告
@@ -509,6 +503,7 @@ class InsightSkill:
 # ---------------------------------------------------------------------------
 # 便捷函数（供 skill 系统调用）
 # ---------------------------------------------------------------------------
+
 
 def parse_trigger(text: str) -> str | None:
     """

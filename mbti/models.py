@@ -136,7 +136,6 @@ class MBTIProfile(BaseModel):
             indent=2,
         )
 
-
     def to_summary(self) -> dict:
         """返回摘要（用于 skill 输出和日志）。"""
         return {
