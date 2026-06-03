@@ -158,6 +158,133 @@ class QualityController:
             "archive_reason": reason,
         }
 
+    def analyze_dimension_signals(
+        self,
+        *,
+        user_id: str,
+        topic: str,
+        user_response: str,
+    ) -> dict[str, float]:
+        text = user_response.strip()
+        if not text:
+            return {"EI": 0.0, "SN": 0.0, "TF": 0.0, "JP": 0.0}
+
+        settings = load_openrouter_settings()
+        if settings:
+            result = self._analyze_dimension_signals_with_llm(
+                user_id=user_id,
+                topic=topic,
+                user_response=user_response,
+            )
+            if result is not None:
+                return result
+
+        return self._analyze_dimension_signals_heuristic(user_response)
+
+    def _analyze_dimension_signals_with_llm(
+        self,
+        *,
+        user_id: str,
+        topic: str,
+        user_response: str,
+    ) -> dict[str, float] | None:
+        settings = load_openrouter_settings()
+        if not settings:
+            return None
+
+        history = db.get_conversation_history(user_id, limit=12)
+        history_lines = "\n".join(
+            (
+                f"- Q: {item.get('topic', '')}\n"
+                f"  A: {str(item.get('user_response', ''))[:120]}"
+            )
+            for item in history[-6:]
+        )
+
+        prompt = (
+            "你在后台做性格倾向信号提取，用于更新四个维度的证据强度。"
+            "不要输出任何解释，只输出 JSON。\n\n"
+            "维度与方向定义（数值范围 -1.0 ~ +1.0，0 表示无信号）：\n"
+            "- EI：+ 越偏外向(E)，- 越偏内向(I)\n"
+            "- SN：+ 越偏实感(S)，- 越偏直觉(N)\n"
+            "- TF：+ 越偏思考(T)，- 越偏情感(F)\n"
+            "- JP：+ 越偏判断(J)，- 越偏知觉(P)\n\n"
+            "规则：\n"
+            "- 只从文本中可见的表达提取，不要凭空脑补。\n"
+            "- 如果证据很弱，请接近 0。\n"
+            '- 输出格式固定为：{"EI": 0.0, "SN": 0.0, "TF": 0.0, "JP": 0.0}\n\n'
+            f"最近对话：\n{history_lines or '（无）'}\n\n"
+            f"本轮问题：{topic}\n\n"
+            f"用户回答：{user_response}\n"
+        )
+
+        content = self._call_llm_with_retry(
+            settings=settings,
+            messages=[
+                {"role": "system", "content": "你只输出 JSON。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_attempts=2,
+        )
+        if not content:
+            return None
+
+        obj = extract_first_json_object(content)
+        if not isinstance(obj, dict):
+            return None
+
+        parsed: dict[str, float] = {}
+        for key in ("EI", "SN", "TF", "JP"):
+            raw = obj.get(key)
+            if isinstance(raw, (int, float)):
+                value = float(raw)
+            elif isinstance(raw, str):
+                try:
+                    value = float(raw.strip())
+                except ValueError:
+                    value = 0.0
+            else:
+                value = 0.0
+            parsed[key] = max(-1.0, min(1.0, value))
+
+        return parsed
+
+    def _analyze_dimension_signals_heuristic(
+        self,
+        user_response: str,
+    ) -> dict[str, float]:
+        text = user_response.strip()
+        if not text:
+            return {"EI": 0.0, "SN": 0.0, "TF": 0.0, "JP": 0.0}
+
+        def score(pos: set[str], neg: set[str]) -> float:
+            pos_hits = sum(1 for w in pos if w in text)
+            neg_hits = sum(1 for w in neg if w in text)
+            raw = pos_hits - neg_hits
+            if raw == 0:
+                return 0.0
+            return max(-1.0, min(1.0, raw / 4.0))
+
+        ei = score(
+            {"社交", "聚会", "人群", "聊天", "交流", "朋友", "团队", "一起"},
+            {"独处", "一个人", "安静", "宅", "自己想", "不爱社交"},
+        )
+        sn = score(
+            {"细节", "具体", "一步步", "落地", "执行", "事实", "经验"},
+            {"抽象", "可能性", "趋势", "直觉", "灵感", "愿景", "感觉"},
+        )
+        tf = score(
+            {"逻辑", "分析", "理性", "客观", "效率", "原则", "合理"},
+            {"感受", "情绪", "在意", "共情", "关系", "温柔", "舒服"},
+        )
+        jp = score(
+            {"计划", "安排", "清单", "提前", "有序", "确定", "按部就班"},
+            {"随性", "随机", "临时", "灵活", "看情况", "再说", "即兴"},
+        )
+
+        return {"EI": ei, "SN": sn, "TF": tf, "JP": jp}
+
     def _score_semantic_fallback(
         self,
         *,
@@ -434,14 +561,8 @@ class QualityController:
         current_dimension: str | None,
         session_confidence: float,
     ) -> tuple[bool, str]:
-        history = db.get_conversation_history(user_id, limit=200)
-        dims = {item.get("dimension") for item in history if item.get("dimension")}
-        if isinstance(current_dimension, str) and current_dimension:
-            dims.add(current_dimension)
-
-        round_count = len(history) + 1
-        if round_count >= 8 and session_confidence >= 0.7 and len(dims) >= 4:
-            return True, "达成结束条件"
+        _ = current_dimension
+        _ = session_confidence
 
         sw = self._load_or_create_window(user_id)
         should_archive, reason = sw.should_archive()
