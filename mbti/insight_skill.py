@@ -18,7 +18,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from datetime import UTC, datetime
+
+if __name__ == "__main__" and (__package__ is None or __package__ == ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from mbti import db
 from mbti.models import MBTIProfile, make_user_id
@@ -1447,8 +1451,6 @@ def _run_skill_loop() -> int:
 
 if __name__ == "__main__":
     # 简单测试
-    import sys
-
     raw_args = sys.argv[1:]
     if "--openrouter-model" in raw_args:
         idx = raw_args.index("--openrouter-model")
