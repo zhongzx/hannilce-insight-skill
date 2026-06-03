@@ -168,6 +168,8 @@ class QualityController:
         text = user_response.strip()
         if not text:
             return {"EI": 0.0, "SN": 0.0, "TF": 0.0, "JP": 0.0}
+        if len(text) < 15:
+            return {"EI": 0.0, "SN": 0.0, "TF": 0.0, "JP": 0.0}
 
         settings = load_openrouter_settings()
         if settings:
@@ -177,6 +179,8 @@ class QualityController:
                 user_response=user_response,
             )
             if result is not None:
+                if len(text) < 30:
+                    return {k: v * 0.5 for k, v in result.items()}
                 return result
 
         return self._analyze_dimension_signals_heuristic(user_response)

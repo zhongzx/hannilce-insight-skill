@@ -7,6 +7,8 @@ triggers:
 commands:
   - name: /MBTI
     description: 开始 MBTI 性格分析，用法：/MBTI <姓名>
+  - name: /报告
+    description: 在当前会话中输出详细报告（也可直接输入“报告”）
 handler:
   command: "cd ${SKILL_DIR} && PYTHONPATH=${SKILL_DIR} python3 mbti/insight_skill.py"
 ---

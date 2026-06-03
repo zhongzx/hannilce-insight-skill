@@ -306,6 +306,8 @@ class InsightSkill:
         self._pending_profile_field: str | None = None
         self._skipped_profile_fields: set[str] = set()
         self._pending_birth_confirmation: str | None = None
+        self._awaiting_summary_feedback: bool = False
+        self._last_user_id: str | None = None
 
     # -------------------------------------------------------------------------
     # 公共接口
@@ -433,7 +435,22 @@ class InsightSkill:
             self.init()
 
         user_id = make_user_id(user_name, timestamp_iso)
+        self._last_user_id = user_id
         debug_enabled = os.environ.get("MBTI_DEBUG") == "1"
+
+        if self._awaiting_summary_feedback and self._last_summary is not None:
+            handled = self._handle_summary_feedback(
+                user_id=user_id,
+                user_response=user_response,
+            )
+            if handled is not None:
+                if debug_enabled:
+                    profile_row = db.get_profile(user_id) or {}
+                    if isinstance(profile_row, dict) and profile_row:
+                        handled["profile"] = MBTIProfile.from_db_row(
+                            profile_row
+                        ).to_summary()
+                return handled
 
         if self._pending_profile_field is not None:
             profile_row = db.get_profile(user_id)
@@ -542,8 +559,7 @@ class InsightSkill:
                     profile=profile,
                 )
                 self._last_summary = summary
-                self._current_topic = summary
-                self._current_dimension = None
+                self._awaiting_summary_feedback = True
                 result_type = "summary"
             else:
                 next_topic = self._tg.get_next(user_id=user_id)
@@ -585,10 +601,100 @@ class InsightSkill:
         if not cleaned:
             return False
         return bool(
-            re.search(r"(分析)?报告", cleaned)
+            re.search(r"^/(报告|report)\b", cleaned, flags=re.IGNORECASE)
+            or re.search(r"(分析)?报告", cleaned)
             or re.search(r"(详细|完整版|完整).*?(分析|报告)", cleaned)
             or re.search(r"(给我|生成|输出).{0,6}(报告|分析)", cleaned)
         )
+
+    def _handle_summary_feedback(
+        self,
+        *,
+        user_id: str,
+        user_response: str,
+    ) -> dict[str, object] | None:
+        text = user_response.strip()
+        if not text:
+            return None
+
+        profile_row = db.get_profile(user_id)
+        if not profile_row:
+            return None
+        profile = MBTIProfile.from_db_row(profile_row)
+
+        if self._is_report_request(text):
+            self._awaiting_summary_feedback = False
+            self._last_summary = None
+            report = _render_report(
+                profile,
+                len(db.get_conversation_history(user_id, limit=100)),
+            )
+            return {
+                "type": "report",
+                "topic": None,
+                "dimension": None,
+                "topic_source": None,
+                "summary": None,
+                "report": report,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "用户请求报告",
+            }
+
+        is_affirm = bool(re.search(r"^(对|是|嗯|差不多|挺准|基本是)$", text))
+        is_deny = bool(re.search(r"(不对|不太对|偏了|不是|相反|不准|误会)", text))
+
+        if is_affirm:
+            profile = self._sm.nudge_dimension_confidences(user_id=user_id, delta=0.05)
+        elif is_deny:
+            profile = self._sm.nudge_dimension_confidences(user_id=user_id, delta=-0.05)
+
+        signals = self._qc.analyze_dimension_signals(
+            user_id=user_id,
+            topic=self._last_summary or "",
+            user_response=text,
+        )
+        profile = self._sm.update_from_dimension_signals(
+            user_id=user_id,
+            signals=signals,
+            evidence_strength=0.3,
+            session_confidence=profile.confidence,
+        )
+
+        self._awaiting_summary_feedback = False
+        self._last_summary = None
+
+        if is_deny and len(text) < 15:
+            topic = "那我想听你说说：你更希望我怎么理解你？能举个最近的例子吗？"
+            self._current_topic = topic
+            self._current_dimension = None
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": "summary_followup",
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        next_topic = self._tg.get_next(user_id=user_id)
+        topic = next_topic["topic"]
+        self._current_topic = topic
+        self._current_dimension = None
+        return {
+            "type": "next_topic",
+            "topic": topic,
+            "dimension": "",
+            "topic_source": next_topic.get("source"),
+            "summary": None,
+            "report": None,
+            "message": None,
+            "should_archive": False,
+            "archive_reason": "继续",
+        }
 
     def _next_profile_field_to_collect(
         self,
@@ -1260,10 +1366,10 @@ def _extract_user_name(
 
 def _is_trigger(text: str | None, payload: dict[str, object]) -> bool:
     event_type = _as_str(payload.get("type")) or _as_str(payload.get("event"))
-    if event_type:
-        return event_type.lower() in {"trigger", "command", "start"}
     if text:
         return parse_trigger(text) is not None
+    if event_type:
+        return event_type.lower() in {"trigger", "start"}
     return False
 
 

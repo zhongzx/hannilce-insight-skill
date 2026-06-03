@@ -246,7 +246,7 @@ class SessionManager:
                 value = 0.0
 
             value = max(-1.0, min(1.0, value))
-            if abs(value) < 0.05:
+            if abs(value) < 0.1:
                 continue
 
             dim_enum = models.MBTIDimension(key)
@@ -272,4 +272,30 @@ class SessionManager:
             dimension_confidences=profile.dimension_confidences.to_json(),
         )
 
+        return models.MBTIProfile.from_db_row(db.get_profile(user_id))
+
+    def nudge_dimension_confidences(
+        self,
+        *,
+        user_id: str,
+        delta: float,
+        dimensions: tuple[str, ...] = ("EI", "SN", "TF", "JP"),
+    ) -> MBTIProfile:
+        profile_row = db.get_profile(user_id)
+        profile = models.MBTIProfile.from_db_row(profile_row)
+
+        for key in dimensions:
+            try:
+                dim_enum = models.MBTIDimension(key)
+            except ValueError:
+                continue
+
+            current = getattr(profile.dimension_confidences, dim_enum.value)
+            target = max(0.0, min(1.0, float(current) + float(delta)))
+            profile.dimension_confidences.update(dim_enum, target)
+
+        db.update_profile(
+            user_id,
+            dimension_confidences=profile.dimension_confidences.to_json(),
+        )
         return models.MBTIProfile.from_db_row(db.get_profile(user_id))
