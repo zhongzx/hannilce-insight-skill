@@ -631,13 +631,64 @@ def run(user_name: str, timestamp_iso: str | None = None) -> dict:
     return skill.handle_trigger(user_name, timestamp_iso)
 
 
+def _run_repl(user_name: str) -> int:
+    timestamp_iso = datetime.now(timezone.utc).isoformat()
+    skill = InsightSkill()
+
+    trigger_result = skill.handle_trigger(user_name, timestamp_iso)
+    topic = trigger_result.get("topic")
+    if isinstance(topic, str) and topic.strip():
+        print(f"话题：{topic}")
+    else:
+        print(json.dumps(trigger_result, ensure_ascii=False, indent=2))
+
+    while True:
+        try:
+            user_response = input("你的回答> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+
+        if not user_response:
+            continue
+        if user_response.lower() in {"exit", "quit", "/exit", "/quit"}:
+            return 0
+
+        result = skill.handle_response(
+            user_name=user_name,
+            timestamp_iso=timestamp_iso,
+            user_response=user_response,
+        )
+        if result.get("type") == "report":
+            report = result.get("report")
+            if isinstance(report, str) and report.strip():
+                print(report)
+            else:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+
+        next_topic = result.get("topic")
+        if isinstance(next_topic, str) and next_topic.strip():
+            print(f"\n话题：{next_topic}")
+        else:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 if __name__ == "__main__":
     # 简单测试
     import sys
+    if len(sys.argv) >= 2 and sys.argv[1] == "--repl":
+        if len(sys.argv) >= 3:
+            sys.exit(_run_repl(sys.argv[2]))
+        sys.exit(_run_repl(input("请输入姓名> ").strip()))
 
     if len(sys.argv) > 1:
-        name = sys.argv[1]
-        result = run(name)
+        result = run(sys.argv[1])
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    else:
-        print("用法: python insight_skill.py <姓名>")
+        sys.exit(0)
+
+    print(
+        "用法: python insight_skill.py <姓名> | "
+        "python insight_skill.py --repl <姓名>"
+    )
+    sys.exit(2)
