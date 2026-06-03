@@ -11,6 +11,8 @@ QualityController: 双层评分 + 滑动窗口 + 封存判断
 from __future__ import annotations
 
 import json
+import os
+import re
 import statistics
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -115,16 +117,19 @@ class QualityController:
             semantic_score = llm_semantic_score
             semantic_source = "provided"
         else:
-            semantic_score = self._try_score_semantic_with_llm(
+            semantic_result = self._try_score_semantic_with_llm(
                 topic=topic,
                 user_response=user_response,
                 user_id=user_id,
             )
-            if semantic_score is None:
-                semantic_score = _DEFAULT_SEMANTIC_SCORE
-                semantic_source = "default"
+            if semantic_result is None:
+                semantic_score = self._score_semantic_fallback(
+                    topic=topic,
+                    user_response=user_response,
+                )
+                semantic_source = "fallback_heuristic"
             else:
-                semantic_source = "llm_median3"
+                semantic_score, semantic_source = semantic_result
 
         round_score = (
             token_score * 0.3 + repeat_contradiction_score * 0.3 + semantic_score * 0.4
@@ -153,19 +158,74 @@ class QualityController:
             "archive_reason": reason,
         }
 
+    def _score_semantic_fallback(
+        self,
+        *,
+        topic: str,
+        user_response: str,
+    ) -> float:
+        base = _DEFAULT_SEMANTIC_SCORE
+        topic_clean = self._normalize_text(topic)
+        response_clean = self._normalize_text(user_response)
+        if len(response_clean) < 10:
+            return 0.0
+
+        overlap = self._jaccard_similarity(
+            self._char_ngrams(topic_clean, n=2),
+            self._char_ngrams(response_clean, n=2),
+        )
+
+        seq_ratio = SequenceMatcher(
+            None,
+            topic_clean[:240],
+            response_clean[:600],
+        ).ratio()
+        combined = overlap * 0.7 + seq_ratio * 0.3
+
+        if combined <= 0.015:
+            return min(0.2, base)
+        if combined <= 0.03:
+            return min(0.3, base)
+        if combined <= 0.06:
+            return min(0.45, base)
+        if combined <= 0.12:
+            return base
+
+        boosted = base + (combined - 0.12) * 1.2
+        return max(0.0, min(1.0, boosted))
+
+    def _normalize_text(self, text: str) -> str:
+        keep = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", text)
+        return "".join(keep).lower()
+
+    def _char_ngrams(self, text: str, *, n: int) -> set[str]:
+        if n <= 0:
+            return set()
+        limited = text[:1200]
+        if len(limited) < n:
+            return {limited} if limited else set()
+        return {limited[i : i + n] for i in range(len(limited) - n + 1)}
+
+    def _jaccard_similarity(self, a: set[str], b: set[str]) -> float:
+        if not a or not b:
+            return 0.0
+        inter = a & b
+        union = a | b
+        return len(inter) / len(union)
+
     def _try_score_semantic_with_llm(
         self,
         *,
         topic: str,
         user_response: str,
         user_id: str,
-    ) -> float | None:
+    ) -> tuple[float, str] | None:
         settings = load_openrouter_settings()
         if not settings:
             return None
 
         if len(user_response.strip()) < 10:
-            return 0.0
+            return 0.0, "llm_short"
 
         history = db.get_conversation_history(user_id, limit=10)
         history_lines = "\n".join(
@@ -182,7 +242,8 @@ class QualityController:
         )
 
         per_call_scores: list[float] = []
-        for _ in range(3):
+        sample_count = self._semantic_sample_count(settings.model)
+        for _ in range(sample_count):
             content = self._call_llm_with_retry(
                 settings=settings,
                 messages=[
@@ -215,7 +276,25 @@ class QualityController:
             return None
 
         robust_10 = self._robust_average_10(per_call_scores)
-        return self._clip_0_1(robust_10 / 10.0)
+        score_0_1 = self._clip_0_1(robust_10 / 10.0)
+        if len(per_call_scores) <= 1:
+            return score_0_1, "llm_single"
+        return score_0_1, f"llm_median{len(per_call_scores)}"
+
+    def _semantic_sample_count(self, model: str) -> int:
+        raw = os.environ.get("OPENROUTER_SEMANTIC_SAMPLES")
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                value = 0
+            if value <= 0:
+                return 1
+            return max(1, min(3, value))
+
+        if "free" in model:
+            return 1
+        return 3
 
     def _call_llm_with_retry(
         self,
@@ -393,8 +472,6 @@ class QualityController:
         Returns:
             0.0~1.0 的评分
         """
-        import re
-
         # 字数（中文按字符计，英文按单词计）
         char_count = len(response)
         word_count = len(re.findall(r"\w+", response))

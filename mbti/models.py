@@ -183,7 +183,7 @@ class MBTIProfile(BaseModel):
                 "final_type": self.final_type,
                 "confidence": self.confidence,
                 "dimensions": self.dimensions.model_dump(),
-                "dimension_confidences": self.dimension_confidences.model_dump(),
+                "dimension_confidences": (self.dimension_confidences.model_dump()),
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "archived": self.archived,
@@ -377,16 +377,10 @@ class SlidingWindow(BaseModel):
 
         # 下降超过阈值，判断严重程度
         if delta <= -0.3:
-            # 严重下降：2 轮即触发（需要 len >= 2）
-            if len(self.recent_scores) >= 2:
-                return True, f"严重下降 delta={delta}"
-        elif delta <= -0.15:
-            # 中度下降：需要 len >= 3
             if len(self.recent_scores) >= 3:
-                return True, f"中度下降 delta={delta}"
-        else:
-            # 轻微下降：需要 len >= 5
+                return True, f"严重下降 delta={delta}"
+        elif delta <= -0.2:
             if len(self.recent_scores) >= 5:
-                return True, f"轻微下降 delta={delta}"
+                return True, f"中度下降 delta={delta}"
 
         return False, f"未达阈值 delta={delta}"

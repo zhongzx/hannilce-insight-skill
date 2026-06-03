@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import random
+import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,9 +18,8 @@ from openrouter_client import (
 class TopicGeneratorV2:
     def __init__(self, seed_path: str | Path | None = None) -> None:
         if seed_path is None:
-            seed_path = (
-                Path(__file__).parent.parent / "seed_data" / "scraped_topics.json"
-            )
+            base = Path(__file__).parent.parent
+            seed_path = base / "seed_data" / "scraped_topics.json"
         self.seed_path = Path(seed_path)
         self._seed_categories = self._load_seed_categories()
 
@@ -33,7 +34,12 @@ class TopicGeneratorV2:
         exclude_topics = exclude_topics or []
         avoid_dimensions = avoid_dimensions or []
         history = db.get_conversation_history(user_id, limit=50)
-        asked_topics = {log["topic"] for log in history} | set(exclude_topics)
+        asked_topics = {
+            str(log.get("topic", "")).strip()
+            for log in history
+            if str(log.get("topic", "")).strip()
+        } | {t.strip() for t in exclude_topics if t.strip()}
+        asked_topics_norm = {self._normalize_topic(t) for t in asked_topics}
 
         target_dimension = dimension or self._choose_next_dimension(
             history,
@@ -65,15 +71,24 @@ class TopicGeneratorV2:
                 settings=settings,
                 history=history,
                 asked_topics=asked_topics,
+                asked_topics_norm=asked_topics_norm,
                 target_dimension=target_dimension,
                 gender=gender,
                 birth_yyyymm=birth_yyyymm,
                 occupation=occupation,
             )
-            if topic is not None and topic not in asked_topics:
+            if (
+                topic is not None
+                and topic not in asked_topics
+                and self._normalize_topic(topic) not in asked_topics_norm
+            ):
                 source = "openrouter"
 
-        if topic is None or topic in asked_topics:
+        if (
+            topic is None
+            or topic in asked_topics
+            or self._normalize_topic(topic) in asked_topics_norm
+        ):
             topic = self._fallback_topic(
                 target_dimension=target_dimension,
                 asked_topics=asked_topics,
@@ -220,6 +235,7 @@ class TopicGeneratorV2:
         settings: OpenRouterSettings,
         history: list[dict],
         asked_topics: set[str],
+        asked_topics_norm: set[str],
         target_dimension: str,
         gender: str | None,
         birth_yyyymm: str | None,
@@ -262,21 +278,95 @@ class TopicGeneratorV2:
             "2) 问题必须开放式，鼓励用户讲具体经历/例子/感受\n"
             "3) 避免与已问过话题重复\n"
         )
-        content = call_chat_completion(
+        content = self._call_llm_topic_with_retry(
             settings=settings,
-            messages=[
-                {"role": "system", "content": "你只输出一行问题文本。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.4,
+            prompt=prompt,
+            max_attempts=3,
         )
-        if not content:
+        if content:
+            candidate = content.strip().splitlines()[0].strip()
+            if candidate and not self._is_similar_to_any(
+                candidate,
+                asked_topics=asked_topics,
+                asked_topics_norm=asked_topics_norm,
+            ):
+                return candidate
+
+        second = self._call_llm_topic_with_retry(
+            settings=settings,
+            prompt=prompt,
+            max_attempts=2,
+        )
+        if not second:
             return None
+        candidate2 = second.strip().splitlines()[0].strip()
+        if not candidate2:
+            return None
+        if self._is_similar_to_any(
+            candidate2,
+            asked_topics=asked_topics,
+            asked_topics_norm=asked_topics_norm,
+        ):
+            return None
+        return candidate2
 
-        first_line = content.strip().splitlines()[0].strip()
-        return first_line or None
+    def _normalize_topic(self, text: str) -> str:
+        cleaned = text.strip().replace("您", "你")
+        parts = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", cleaned)
+        return "".join(parts).lower()
 
-    def _fallback_topic(self, *, target_dimension: str, asked_topics: set[str]) -> str:
+    def _is_similar_to_any(
+        self,
+        candidate: str,
+        *,
+        asked_topics: set[str],
+        asked_topics_norm: set[str],
+    ) -> bool:
+        candidate_norm = self._normalize_topic(candidate)
+        if not candidate_norm:
+            return True
+        if candidate_norm in asked_topics_norm:
+            return True
+
+        from difflib import SequenceMatcher
+
+        for prev in asked_topics:
+            prev_norm = self._normalize_topic(prev)
+            if not prev_norm:
+                continue
+            if SequenceMatcher(None, candidate_norm, prev_norm).ratio() >= 0.9:
+                return True
+        return False
+
+    def _call_llm_topic_with_retry(
+        self,
+        *,
+        settings: OpenRouterSettings,
+        prompt: str,
+        max_attempts: int,
+    ) -> str | None:
+        messages = [
+            {"role": "system", "content": "你只输出一行问题文本。"},
+            {"role": "user", "content": prompt},
+        ]
+        for attempt in range(max_attempts):
+            content = call_chat_completion(
+                settings=settings,
+                messages=messages,
+                temperature=0.4,
+            )
+            if content:
+                return content
+            if attempt < max_attempts - 1:
+                time.sleep(0.2 * (attempt + 1))
+        return None
+
+    def _fallback_topic(
+        self,
+        *,
+        target_dimension: str,
+        asked_topics: set[str],
+    ) -> str:
         fallback_map: dict[str, list[str]] = {
             "EI": [
                 "你最近一次和别人相处让你感到“充电”的时刻是什么？当时发生了什么？",

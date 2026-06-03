@@ -269,6 +269,7 @@ _DEFAULT_TYPE_DESC = {
 
 def _render_report(profile: MBTIProfile, round_count: int) -> str:
     """渲染 MBTI 分析报告。"""
+    mbti_type = profile.final_type or profile.dimensions.to_mbti_type()
     settings = load_openrouter_settings()
     if settings:
         history = db.get_conversation_history(profile.user_id, limit=50)
@@ -284,7 +285,12 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
             "关系与沟通、成长建议\n"
             "2) 用具体措辞引用对话中的线索（不要捏造不存在的细节）\n"
             "3) 如果信息不足，明确说明需要补充什么信息\n"
-            "4) 只输出 Markdown，不要输出代码块外的解释\n\n"
+            "4) 维度名称必须严格使用：EI(外向E/内向I)、SN(实感S/直觉N)、"
+            "TF(思考T/情感F)、JP(判断J/知觉P)，不要写错维度对\n"
+            f"5) 最终类型必须使用：{mbti_type}（以画像为准），"
+            "如证据存在冲突，只说明冲突点，不要擅自改类型\n"
+            "6) 全文用“你”称呼，不要用“您”\n"
+            "7) 只输出 Markdown，不要输出代码块外的解释\n\n"
             f"用户：{profile.name}\n"
             f"轮数：{round_count}\n"
             "当前画像摘要："
@@ -305,7 +311,6 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
         if content:
             return content
 
-    mbti_type = profile.final_type or "XXXX"
     type_info = _MBTI_TYPE_DESCRIPTIONS.get(mbti_type, _DEFAULT_TYPE_DESC)
 
     def dim_info(dim_name: str, letter: str) -> tuple:
@@ -549,7 +554,10 @@ class InsightSkill:
             if is_finish:
                 report = _render_report(profile, round_count)
             else:
-                message = "感觉今天状态不太对，要不改天再聊？你什么时候方便？"
+                message = (
+                    "本次对话质量波动较大，为避免误判，我先暂停本次测评。"
+                    "你可以稍后重新触发再继续。"
+                )
         else:
             # 获取下一个话题
             avoid_dimensions = [
@@ -585,6 +593,10 @@ class InsightSkill:
                 "semantic_score": semantic_score,
                 "semantic_source": quality_result.get("semantic_source"),
                 "confidence": confidence,
+                "repeat_contradiction_score": quality_result.get(
+                    "repeat_contradiction_score"
+                ),
+                "round_score": quality_result.get("round_score"),
             },
             "report": report,
             "message": message,
@@ -633,6 +645,17 @@ def run(user_name: str, timestamp_iso: str | None = None) -> dict:
 
 
 def _run_repl(user_name: str) -> int:
+    settings = load_openrouter_settings()
+    if settings is None:
+        print(
+            "未检测到 OpenRouter 配置，将使用内置话题池与启发式评分。"
+            "如需启用动态话题与 LLM 评分，请设置环境变量 "
+            "OPENROUTER_API_KEY / OPENROUTER_MODEL，或在项目根目录创建 "
+            ".openrouter.json（已在 .gitignore）。"
+        )
+    else:
+        print(f"OpenRouter 已启用：model={settings.model}")
+
     timestamp_iso = datetime.now(UTC).isoformat()
     skill = InsightSkill()
 
@@ -673,8 +696,12 @@ def _run_repl(user_name: str) -> int:
             return 0
         if result.get("type") == "archive":
             message = result.get("message")
+            reason = result.get("archive_reason")
             if isinstance(message, str) and message.strip():
-                print(message)
+                if isinstance(reason, str) and reason.strip():
+                    print(f"{message}  (reason={reason})")
+                else:
+                    print(message)
             else:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
@@ -687,6 +714,8 @@ def _run_repl(user_name: str) -> int:
             f"token={quality.get('token_score')} "
             f"semantic={quality.get('semantic_score')} "
             f"(source={quality.get('semantic_source')}) "
+            f"repeat={quality.get('repeat_contradiction_score')} "
+            f"round={quality.get('round_score')} "
             f"confidence={quality.get('confidence')}"
         )
         print(
@@ -824,22 +853,37 @@ def _run_skill_loop() -> int:
 
 if __name__ == "__main__":
     # 简单测试
+    import os
     import sys
 
-    if len(sys.argv) == 1 and not sys.stdin.isatty():
+    raw_args = sys.argv[1:]
+    if "--openrouter-model" in raw_args:
+        idx = raw_args.index("--openrouter-model")
+        if idx + 1 < len(raw_args):
+            os.environ.setdefault("OPENROUTER_MODEL", raw_args[idx + 1])
+            del raw_args[idx : idx + 2]
+
+    if "--openrouter-config" in raw_args:
+        idx = raw_args.index("--openrouter-config")
+        if idx + 1 < len(raw_args):
+            os.environ["OPENROUTER_CONFIG"] = raw_args[idx + 1]
+            del raw_args[idx : idx + 2]
+
+    if not raw_args and not sys.stdin.isatty():
         sys.exit(_run_skill_loop())
 
-    if len(sys.argv) >= 2 and sys.argv[1] == "--repl":
-        if len(sys.argv) >= 3:
-            sys.exit(_run_repl(sys.argv[2]))
+    if raw_args and raw_args[0] == "--repl":
+        if len(raw_args) >= 2:
+            sys.exit(_run_repl(raw_args[1]))
         sys.exit(_run_repl(input("请输入姓名> ").strip()))
 
-    if len(sys.argv) > 1:
-        result = run(sys.argv[1])
+    if raw_args:
+        result = run(raw_args[0])
         print(json.dumps(result, ensure_ascii=False, indent=2))
         sys.exit(0)
 
     print(
-        "用法: python insight_skill.py <姓名> | python insight_skill.py --repl <姓名>"
+        "用法: python insight_skill.py <姓名> | python insight_skill.py --repl <姓名>\n"
+        "可选参数: --openrouter-model <model> | --openrouter-config <path>"
     )
     sys.exit(2)
