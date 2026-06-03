@@ -303,6 +303,8 @@ class InsightSkill:
         self._current_topic: str | None = None
         self._current_dimension: str | None = None
         self._last_summary: str | None = None
+        self._pending_profile_field: str | None = None
+        self._skipped_profile_fields: set[str] = set()
 
     # -------------------------------------------------------------------------
     # 公共接口
@@ -355,10 +357,21 @@ class InsightSkill:
         is_new = ctx["is_new"]
         history = db.get_conversation_history(profile.user_id, limit=5)
 
-        if is_new and not history:
-            topic = "最近有没有什么让你特别投入或者放不下的事情？"
-            dimension = ""
-            topic_source = "initial"
+        if not history:
+            next_field = self._next_profile_field_to_collect(profile)
+            if next_field is not None:
+                topic = self._build_profile_question(
+                    user_name=user_name,
+                    field=next_field,
+                )
+                self._pending_profile_field = next_field
+                dimension = ""
+                topic_source = "collect_profile"
+            else:
+                next_topic = self._tg.get_next(user_id=profile.user_id)
+                topic = next_topic["topic"]
+                dimension = next_topic.get("dimension", "")
+                topic_source = next_topic.get("source")
         else:
             next_topic = self._tg.get_next(user_id=profile.user_id)
             topic = next_topic["topic"]
@@ -420,6 +433,50 @@ class InsightSkill:
 
         user_id = make_user_id(user_name, timestamp_iso)
         debug_enabled = os.environ.get("MBTI_DEBUG") == "1"
+
+        if self._pending_profile_field is not None:
+            profile_row = db.get_profile(user_id)
+            if not profile_row:
+                return {
+                    "type": "error",
+                    "error": "missing_profile",
+                    "message": "会话状态缺失，请重新发送 /MBTI <姓名> 触发。",
+                }
+
+            profile = MBTIProfile.from_db_row(profile_row)
+            if self._is_report_request(user_response):
+                self._pending_profile_field = None
+                next_topic = self._tg.get_next(user_id=user_id)
+                topic = next_topic["topic"]
+                self._current_topic = topic
+                self._current_dimension = None
+                result: dict[str, object] = {
+                    "type": "next_topic",
+                    "topic": topic,
+                    "dimension": "",
+                    "topic_source": next_topic.get("source"),
+                    "summary": None,
+                    "report": None,
+                    "message": None,
+                    "should_archive": False,
+                    "archive_reason": "继续",
+                }
+                if debug_enabled:
+                    result["profile"] = profile.to_summary()
+                return result
+
+            handled = self._handle_profile_collection_turn(
+                user_id=user_id,
+                user_name=user_name,
+                profile=profile,
+                user_response=user_response,
+            )
+            if handled is not None:
+                if debug_enabled:
+                    handled["profile"] = MBTIProfile.from_db_row(
+                        db.get_profile(user_id) or profile_row
+                    ).to_summary()
+                return handled
 
         # 1. 质量评估
         quality_result = self._qc.evaluate_round(
@@ -531,6 +588,194 @@ class InsightSkill:
             or re.search(r"(详细|完整版|完整).*?(分析|报告)", cleaned)
             or re.search(r"(给我|生成|输出).{0,6}(报告|分析)", cleaned)
         )
+
+    def _next_profile_field_to_collect(
+        self,
+        profile: MBTIProfile,
+    ) -> str | None:
+        if "gender" not in self._skipped_profile_fields and not profile.gender:
+            return "gender"
+        if (
+            "birth_yyyymm" not in self._skipped_profile_fields
+            and not profile.birth_yyyymm
+        ):
+            return "birth_yyyymm"
+        if "occupation" not in self._skipped_profile_fields and not profile.occupation:
+            return "occupation"
+        return None
+
+    def _build_profile_question(self, *, user_name: str, field: str) -> str:
+        if field == "gender":
+            return (
+                f"{user_name}，我先确认一下，你更愿意我怎么称呼你：男、女，"
+                "还是其他/不方便说？你也可以直接回“跳过”。"
+            )
+        if field == "birth_yyyymm":
+            return (
+                "你大概是哪年哪月出生的呀？我只需要到年月就行，"
+                "比如 199803。也可以回“跳过”。"
+            )
+        if field == "occupation":
+            return "你现在主要在做什么工作/方向呀？一句话就行，也可以回“跳过”。"
+        return "你可以简单说一句，也可以回“跳过”。"
+
+    def _handle_profile_collection_turn(
+        self,
+        *,
+        user_id: str,
+        user_name: str,
+        profile: MBTIProfile,
+        user_response: str,
+    ) -> dict[str, object] | None:
+        field = self._pending_profile_field
+        if field is None:
+            return None
+
+        if self._is_skip_response(user_response):
+            self._skipped_profile_fields.add(field)
+            self._pending_profile_field = None
+        else:
+            if field == "gender":
+                value = self._parse_gender(user_response)
+                if value is None:
+                    topic = (
+                        "我只想知道你更愿意我怎么称呼你就行：男/女/其他/不方便说。"
+                        "你也可以回“跳过”。"
+                    )
+                    self._current_topic = topic
+                    return {
+                        "type": "next_topic",
+                        "topic": topic,
+                        "dimension": "",
+                        "topic_source": "collect_profile_retry",
+                        "summary": None,
+                        "report": None,
+                        "message": None,
+                        "should_archive": False,
+                        "archive_reason": "继续",
+                    }
+                db.update_profile(user_id, gender=value)
+                self._pending_profile_field = None
+            elif field == "birth_yyyymm":
+                value = self._parse_birth_yyyymm(user_response)
+                if value is None:
+                    topic = "我只需要到年月就行，比如 199803。你也可以直接回“跳过”。"
+                    self._current_topic = topic
+                    return {
+                        "type": "next_topic",
+                        "topic": topic,
+                        "dimension": "",
+                        "topic_source": "collect_profile_retry",
+                        "summary": None,
+                        "report": None,
+                        "message": None,
+                        "should_archive": False,
+                        "archive_reason": "继续",
+                    }
+                db.update_profile(user_id, birth_yyyymm=value)
+                self._pending_profile_field = None
+            elif field == "occupation":
+                value = self._parse_occupation(user_response)
+                if value is None:
+                    self._skipped_profile_fields.add(field)
+                    self._pending_profile_field = None
+                else:
+                    db.update_profile(user_id, occupation=value)
+                    self._pending_profile_field = None
+            else:
+                self._skipped_profile_fields.add(field)
+                self._pending_profile_field = None
+
+        updated_row = db.get_profile(user_id) or profile.model_dump()
+        updated_profile = (
+            MBTIProfile.from_db_row(updated_row)
+            if isinstance(updated_row, dict)
+            else profile
+        )
+        next_field = self._next_profile_field_to_collect(updated_profile)
+        if next_field is not None:
+            topic = self._build_profile_question(
+                user_name=user_name,
+                field=next_field,
+            )
+            self._pending_profile_field = next_field
+            self._current_topic = topic
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": "collect_profile",
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        next_topic = self._tg.get_next(user_id=user_id)
+        topic = next_topic["topic"]
+        self._current_topic = topic
+        self._current_dimension = None
+        return {
+            "type": "next_topic",
+            "topic": topic,
+            "dimension": "",
+            "topic_source": next_topic.get("source"),
+            "summary": None,
+            "report": None,
+            "message": None,
+            "should_archive": False,
+            "archive_reason": "继续",
+        }
+
+    def _is_skip_response(self, text: str) -> bool:
+        cleaned = text.strip().lower()
+        return cleaned in {"跳过", "不方便", "不方便说", "保密", "略过", "skip"}
+
+    def _parse_gender(self, text: str) -> str | None:
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        if re.search(r"(男|男性|男生)$", cleaned):
+            return "男"
+        if re.search(r"(女|女性|女生)$", cleaned):
+            return "女"
+        if re.search(r"(其他|非二元|不确定)$", cleaned):
+            return "其他"
+        if re.search(r"(不方便|保密|不想说)$", cleaned):
+            return None
+        return None
+
+    def _parse_birth_yyyymm(self, text: str) -> str | None:
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        match = re.search(
+            r"(19\d{2}|20\d{2})\D{0,3}([01]?\d)",
+            cleaned,
+        )
+        if not match:
+            match = re.search(r"^(19\d{2}|20\d{2})([01]\d)$", cleaned)
+        if not match:
+            return None
+        year = int(match.group(1))
+        month = int(match.group(2))
+        if month < 1 or month > 12:
+            return None
+        now = datetime.now(UTC)
+        if year < 1900 or year > now.year:
+            return None
+        if year == now.year and month > now.month:
+            return None
+        return f"{year:04d}{month:02d}"
+
+    def _parse_occupation(self, text: str) -> str | None:
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        if len(cleaned) > 60:
+            cleaned = cleaned[:60]
+        return cleaned
 
     def _should_give_light_summary(
         self,
