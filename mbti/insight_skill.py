@@ -21,13 +21,13 @@ from datetime import datetime, timezone
 
 from mbti import db
 from mbti.models import MBTIProfile, make_user_id
-from mbti.openrouter_client import (
-    call_chat_completion,
-    load_openrouter_settings,
-)
 from mbti.quality_controller import QualityController
 from mbti.session_manager import SessionManager
 from mbti.topic_generator import TopicGenerator
+from openrouter_client import (
+    call_chat_completion,
+    load_openrouter_settings,
+)
 
 # ---------------------------------------------------------------------------
 # 触发词正则

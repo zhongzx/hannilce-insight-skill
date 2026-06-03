@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from mbti import db, models
 from mbti.models import SlidingWindow
-from mbti.openrouter_client import (
+from openrouter_client import (
     call_chat_completion,
     extract_first_json_object,
     load_openrouter_settings,

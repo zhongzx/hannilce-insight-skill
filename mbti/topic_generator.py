@@ -9,16 +9,14 @@ TopicGenerator: 动态话题生成 + 内置话题池兜底
 
 from __future__ import annotations
 
-import contextlib
 import json
 import random
 from datetime import datetime, timezone
 from pathlib import Path
 
 from mbti import db
-from mbti.openrouter_client import (
+from openrouter_client import (
     call_chat_completion,
-    extract_first_json_object,
     load_openrouter_settings,
 )
 
@@ -244,32 +242,42 @@ class TopicGenerator:
         history = db.get_conversation_history(user_id, limit=50)
         asked_topics = {log["topic"] for log in history} | set(exclude_topics)
 
-        llm_topic = self._try_get_llm_topic(
-            user_id=user_id,
-            asked_topics=asked_topics,
-            target_dimension=dimension,
-        )
-        if llm_topic:
-            return llm_topic
-
         # 尝试获取数据库话题
         topics = self._get_db_topics(dimension=dimension, asked=asked_topics)
         if topics:
             chosen = random.choice(topics)
-            return self._format_topic(chosen)
+            seed = self._format_topic(chosen)
+            rewritten = self._try_rewrite_seed(
+                user_id=user_id,
+                seed=seed,
+                asked_topics=asked_topics,
+            )
+            return rewritten or seed
 
         # 降级：其他维度
         if dimension:
             topics = self._get_db_topics(dimension=None, asked=asked_topics)
             if topics:
                 chosen = random.choice(topics)
-                return self._format_topic(chosen)
+                seed = self._format_topic(chosen)
+                rewritten = self._try_rewrite_seed(
+                    user_id=user_id,
+                    seed=seed,
+                    asked_topics=asked_topics,
+                )
+                return rewritten or seed
 
         # 降级：内置话题
-        return self._get_builtin_fallback(
+        seed = self._get_builtin_fallback(
             dimension=dimension,
             asked=asked_topics,
         )
+        rewritten = self._try_rewrite_seed(
+            user_id=user_id,
+            seed=seed,
+            asked_topics=asked_topics,
+        )
+        return rewritten or seed
 
     def _get_db_topics(
         self,
@@ -303,41 +311,49 @@ class TopicGenerator:
             "source": row.get("source", "builtin"),
         }
 
-    def _try_get_llm_topic(
+    def _try_rewrite_seed(
         self,
         *,
         user_id: str,
+        seed: dict,
         asked_topics: set[str],
-        target_dimension: str | None,
     ) -> dict | None:
         settings = load_openrouter_settings()
         if not settings:
             return None
 
-        profile_row = db.get_profile(user_id)
-        dimensions: dict[str, float] = {
-            "EI": 0.5,
-            "SN": 0.5,
-            "TF": 0.5,
-            "JP": 0.5,
-        }
-        if profile_row and profile_row.get("dimensions"):
-            with contextlib.suppress(json.JSONDecodeError):
-                dimensions.update(json.loads(profile_row["dimensions"]))
+        seed_topic = seed.get("topic")
+        seed_dimension = seed.get("dimension")
+        if not isinstance(seed_topic, str) or not isinstance(
+            seed_dimension,
+            str,
+        ):
+            return None
 
-        history = db.get_conversation_history(user_id, limit=20)
-        prompt = self.build_llm_prompt(
-            user_id=user_id,
-            history=history,
-            dimensions=dimensions,
-            target_dimension=target_dimension,
+        history = db.get_conversation_history(user_id, limit=10)
+        history_lines = "\n".join(
+            f"- Q: {item.get('topic', '')}\n  A: {item.get('user_response', '')[:80]}"
+            for item in history
+        )
+        asked_preview = "\n".join(list(asked_topics)[:10])
+        prompt = (
+            "你是一个 MBTI 话题设计专家。下面给你一个“种子话题”，"
+            "请把它改写成更自然、更开放、更容易引导用户讲故事的一个问题。\n\n"
+            "要求：\n"
+            "1) 只输出一行问题文本，不要输出 JSON，不要解释\n"
+            "2) 不要变成选择题，尽量让用户讲经历/例子\n"
+            "3) 不要与已问过话题重复\n"
+            f"4) 保持维度不变：{seed_dimension}\n\n"
+            f"种子话题：{seed_topic}\n\n"
+            f"最近对话：\n{history_lines or '（无对话记录）'}\n\n"
+            f"已问过话题（截断）：\n{asked_preview or '（无）'}\n"
         )
         content = call_chat_completion(
             settings=settings,
             messages=[
                 {
                     "role": "system",
-                    "content": "你是一个 MBTI 话题设计专家，只输出 JSON。",
+                    "content": "你擅长把种子话题改写成开放式提问。",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -345,28 +361,23 @@ class TopicGenerator:
         if not content:
             return None
 
-        data = extract_first_json_object(content)
-        if not data:
+        topic = content.strip()
+        if not topic:
             return None
-
-        topic = data.get("topic")
-        dimension = data.get("dimension")
-        if not isinstance(topic, str) or not topic.strip():
-            return None
-        if not isinstance(dimension, str) or dimension not in {"EI", "SN", "TF", "JP"}:
-            return None
-
-        topic = topic.strip()
         if topic in asked_topics:
             return None
 
         db.upsert_topic(
             topic=topic,
-            dimension=dimension,
-            source="llm",
+            dimension=seed_dimension,
+            source="llm_rewrite",
             expires_at=None,
         )
-        return {"topic": topic, "dimension": dimension, "source": "llm"}
+        return {
+            "topic": topic,
+            "dimension": seed_dimension,
+            "source": "llm_rewrite",
+        }
 
     # -------------------------------------------------------------------------
     # LLM 动态生成（由调用方注入 prompt）

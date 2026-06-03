@@ -35,7 +35,6 @@ def load_openrouter_settings() -> OpenRouterSettings | None:
 
     config_path = os.environ.get("OPENROUTER_CONFIG")
     candidate = Path(config_path) if config_path else Path.cwd() / ".openrouter.json"
-
     if not candidate.exists():
         return None
 
