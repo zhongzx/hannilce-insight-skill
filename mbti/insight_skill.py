@@ -16,14 +16,12 @@ MBTI Insight Skill — 主入口模块
 from __future__ import annotations
 
 import json
-import os
 import re
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 
 from mbti import db
 from mbti.models import MBTIProfile, make_user_id
+from mbti.openrouter_client import call_chat_completion, load_openrouter_settings
 from mbti.quality_controller import QualityController
 from mbti.session_manager import SessionManager
 from mbti.topic_generator import TopicGenerator
@@ -266,59 +264,10 @@ _DEFAULT_TYPE_DESC = {
 }
 
 
-def _call_openrouter_chat_completion(
-    *,
-    api_key: str,
-    model: str,
-    messages: list[dict[str, str]],
-    temperature: float = 0.3,
-    timeout_seconds: float = 45.0,
-) -> str | None:
-    url = os.environ.get(
-        "OPENROUTER_BASE_URL",
-        "https://openrouter.ai/api/v1/chat/completions",
-    )
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url=url,
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
-        return None
-
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-
-    choices = result.get("choices", [])
-    if not choices:
-        return None
-    message = choices[0].get("message", {})
-    content = message.get("content")
-    if not isinstance(content, str) or not content.strip():
-        return None
-    return content.strip()
-
-
 def _render_report(profile: MBTIProfile, round_count: int) -> str:
     """渲染 MBTI 分析报告。"""
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if api_key:
-        model = os.environ.get("OPENROUTER_MODEL", "openrouter/auto")
+    settings = load_openrouter_settings()
+    if settings:
         history = db.get_conversation_history(profile.user_id, limit=50)
         history_lines = "\n".join(
             f"- Q: {item.get('topic', '')}\n  A: {item.get('user_response', '')}"
@@ -335,13 +284,13 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
             "4) 只输出 Markdown，不要输出代码块外的解释\n\n"
             f"用户：{profile.name}\n"
             f"轮数：{round_count}\n"
-            f"当前画像摘要：{json.dumps(profile.to_summary(), ensure_ascii=False)}\n\n"
+            "当前画像摘要："
+            f"{json.dumps(profile.to_summary(), ensure_ascii=False)}\n\n"
             "对话记录：\n"
             f"{history_lines or '（无对话记录）'}\n"
         )
-        content = _call_openrouter_chat_completion(
-            api_key=api_key,
-            model=model,
+        content = call_chat_completion(
+            settings=settings,
             messages=[
                 {
                     "role": "system",
@@ -677,6 +626,7 @@ def _run_repl(user_name: str) -> int:
 if __name__ == "__main__":
     # 简单测试
     import sys
+
     if len(sys.argv) >= 2 and sys.argv[1] == "--repl":
         if len(sys.argv) >= 3:
             sys.exit(_run_repl(sys.argv[2]))
@@ -688,7 +638,6 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print(
-        "用法: python insight_skill.py <姓名> | "
-        "python insight_skill.py --repl <姓名>"
+        "用法: python insight_skill.py <姓名> | python insight_skill.py --repl <姓名>"
     )
     sys.exit(2)

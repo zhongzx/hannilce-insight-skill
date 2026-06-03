@@ -8,6 +8,8 @@ venv/
 .venv/
 env/
 .env
+.env.local
+.openrouter.json
 
 # IDE
 .idea/

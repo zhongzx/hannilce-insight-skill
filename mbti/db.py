@@ -35,9 +35,7 @@ def get_connection(foreign_keys: bool = True) -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL")
     foreign_key_pragma = (
-        "PRAGMA foreign_keys = ON"
-        if foreign_keys
-        else "PRAGMA foreign_keys = OFF"
+        "PRAGMA foreign_keys = ON" if foreign_keys else "PRAGMA foreign_keys = OFF"
     )
     conn.execute(foreign_key_pragma)
     conn.row_factory = sqlite3.Row
@@ -125,24 +123,19 @@ def init_db() -> None:
     # 索引
     # ---------------------------------------------------------------------------
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_profiles_archived "
-        "ON mbti_profiles(archived)"
+        "CREATE INDEX IF NOT EXISTS idx_profiles_archived ON mbti_profiles(archived)"
     )
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_logs_user_id "
-        "ON conversation_logs(user_id)"
+        "CREATE INDEX IF NOT EXISTS idx_logs_user_id ON conversation_logs(user_id)"
     )
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_logs_timestamp "
-        "ON conversation_logs(timestamp)"
+        "CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON conversation_logs(timestamp)"
     )
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_quality_user_id "
-        "ON quality_logs(user_id)"
+        "CREATE INDEX IF NOT EXISTS idx_quality_user_id ON quality_logs(user_id)"
     )
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_quality_timestamp "
-        "ON quality_logs(timestamp)"
+        "CREATE INDEX IF NOT EXISTS idx_quality_timestamp ON quality_logs(timestamp)"
     )
 
     conn.commit()

@@ -9,12 +9,18 @@ TopicGenerator: 动态话题生成 + 内置话题池兜底
 
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 from datetime import datetime, timezone
 from pathlib import Path
 
 from mbti import db
+from mbti.openrouter_client import (
+    call_chat_completion,
+    extract_first_json_object,
+    load_openrouter_settings,
+)
 
 # ---------------------------------------------------------------------------
 # 内置话题池（静态兜底）
@@ -137,9 +143,7 @@ class TopicGenerator:
         """
         if seed_path is None:
             seed_path = (
-                Path(__file__).parent.parent
-                / "seed_data"
-                / "scraped_topics.json"
+                Path(__file__).parent.parent / "seed_data" / "scraped_topics.json"
             )
         self.seed_path = Path(seed_path)
         self._seed_topics: list[dict] = self._load_seed()
@@ -240,6 +244,14 @@ class TopicGenerator:
         history = db.get_conversation_history(user_id, limit=50)
         asked_topics = {log["topic"] for log in history} | set(exclude_topics)
 
+        llm_topic = self._try_get_llm_topic(
+            user_id=user_id,
+            asked_topics=asked_topics,
+            target_dimension=dimension,
+        )
+        if llm_topic:
+            return llm_topic
+
         # 尝试获取数据库话题
         topics = self._get_db_topics(dimension=dimension, asked=asked_topics)
         if topics:
@@ -291,6 +303,66 @@ class TopicGenerator:
             "source": row.get("source", "builtin"),
         }
 
+    def _try_get_llm_topic(
+        self,
+        *,
+        user_id: str,
+        asked_topics: set[str],
+        target_dimension: str | None,
+    ) -> dict | None:
+        settings = load_openrouter_settings()
+        if not settings:
+            return None
+
+        profile_row = db.get_profile(user_id)
+        dimensions: dict[str, float] = {"EI": 0.5, "SN": 0.5, "TF": 0.5, "JP": 0.5}
+        if profile_row and profile_row.get("dimensions"):
+            with contextlib.suppress(json.JSONDecodeError):
+                dimensions.update(json.loads(profile_row["dimensions"]))
+
+        history = db.get_conversation_history(user_id, limit=20)
+        prompt = self.build_llm_prompt(
+            user_id=user_id,
+            history=history,
+            dimensions=dimensions,
+            target_dimension=target_dimension,
+        )
+        content = call_chat_completion(
+            settings=settings,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一个 MBTI 话题设计专家，只输出 JSON。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        if not content:
+            return None
+
+        data = extract_first_json_object(content)
+        if not data:
+            return None
+
+        topic = data.get("topic")
+        dimension = data.get("dimension")
+        if not isinstance(topic, str) or not topic.strip():
+            return None
+        if not isinstance(dimension, str) or dimension not in {"EI", "SN", "TF", "JP"}:
+            return None
+
+        topic = topic.strip()
+        if topic in asked_topics:
+            return None
+
+        db.upsert_topic(
+            topic=topic,
+            dimension=dimension,
+            source="llm",
+            expires_at=None,
+        )
+        return {"topic": topic, "dimension": dimension, "source": "llm"}
+
     # -------------------------------------------------------------------------
     # LLM 动态生成（由调用方注入 prompt）
     # -------------------------------------------------------------------------
@@ -327,8 +399,7 @@ class TopicGenerator:
             for log in history[-5:]:
                 dim = dim_map.get(log.get("dimension", ""), log["dimension"])
                 history_lines += (
-                    f"- [{dim}] {log['topic']}\n"
-                    f"  用户: {log['user_response'][:60]}\n"
+                    f"- [{dim}] {log['topic']}\n  用户: {log['user_response'][:60]}\n"
                 )
 
         # 计算最需要探索的维度（分值最接近 0.5 的，即最不确定）

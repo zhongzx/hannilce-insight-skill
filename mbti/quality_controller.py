@@ -15,6 +15,11 @@ from datetime import datetime, timezone
 
 from mbti import db, models
 from mbti.models import SlidingWindow
+from mbti.openrouter_client import (
+    call_chat_completion,
+    extract_first_json_object,
+    load_openrouter_settings,
+)
 
 # ---------------------------------------------------------------------------
 # 评分常量
@@ -90,11 +95,15 @@ class QualityController:
         )
 
         # 语义层评分
-        semantic_score = (
-            llm_semantic_score
-            if llm_semantic_score is not None
-            else _DEFAULT_SEMANTIC_SCORE
-        )
+        if llm_semantic_score is not None:
+            semantic_score = llm_semantic_score
+        else:
+            semantic_score = self._try_score_semantic_with_llm(
+                topic=topic,
+                user_response=user_response,
+            )
+            if semantic_score is None:
+                semantic_score = _DEFAULT_SEMANTIC_SCORE
 
         # 综合置信度：三因子模型
         confidence = self._compute_confidence(token_score, semantic_score)
@@ -114,6 +123,45 @@ class QualityController:
             "should_archive": should_archive,
             "archive_reason": reason,
         }
+
+    def _try_score_semantic_with_llm(
+        self,
+        *,
+        topic: str,
+        user_response: str,
+    ) -> float | None:
+        settings = load_openrouter_settings()
+        if not settings:
+            return None
+
+        prompt = self.build_semantic_prompt(topic=topic, user_response=user_response)
+        content = call_chat_completion(
+            settings=settings,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一个对话质量评估专家，只输出 JSON。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        if not content:
+            return None
+
+        data = extract_first_json_object(content)
+        if not data:
+            return None
+
+        score = data.get("score")
+        if not isinstance(score, (int, float)):
+            return None
+
+        score_float = float(score)
+        if score_float < 0.0:
+            return 0.0
+        if score_float > 1.0:
+            return 1.0
+        return score_float
 
     # -------------------------------------------------------------------------
     # Token 层评分

@@ -309,11 +309,7 @@ class SlidingWindow(BaseModel):
         if len(self.recent_scores) < 3:
             return None
         mid = len(self.recent_scores) // 2
-        first_half = (
-            self.recent_scores[:mid]
-            if mid > 0
-            else self.recent_scores[:1]
-        )
+        first_half = self.recent_scores[:mid] if mid > 0 else self.recent_scores[:1]
         second_half = self.recent_scores[mid:]
         avg_first = sum(first_half) / len(first_half)
         avg_second = sum(second_half) / len(second_half)
