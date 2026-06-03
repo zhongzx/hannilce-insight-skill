@@ -484,12 +484,13 @@ class InsightSkill:
 
         Returns:
             {
-                "type": "next_topic" | "report",
+                "type": "next_topic" | "report" | "archive",
                 "topic": str,           # 下一话题（仅 next_topic）
                 "dimension": str,       # 下一维度（仅 next_topic）
                 "profile": dict,        # 当前画像摘要
                 "quality": dict,        # 本轮评分详情
                 "report": str,          # 分析报告（仅 report）
+                "message": str,         # 结束提示（仅 archive）
                 "should_archive": bool, # 是否应结束话题
                 "archive_reason": str,  # 结束原因
             }
@@ -541,10 +542,14 @@ class InsightSkill:
         topic = None
         dimension = None
         next_topic_source = None
+        message = None
+        is_finish = should_archive and archive_reason == "达成结束条件"
 
         if should_archive:
-            # 生成报告
-            report = _render_report(profile, round_count)
+            if is_finish:
+                report = _render_report(profile, round_count)
+            else:
+                message = "感觉今天状态不太对，要不改天再聊？你什么时候方便？"
         else:
             # 获取下一个话题
             avoid_dimensions = [
@@ -562,8 +567,15 @@ class InsightSkill:
             self._current_topic = topic
             self._current_dimension = dimension
 
+        if is_finish:
+            result_type = "report"
+        elif should_archive:
+            result_type = "archive"
+        else:
+            result_type = "next_topic"
+
         return {
-            "type": "report" if should_archive else "next_topic",
+            "type": result_type,
             "topic": topic,
             "dimension": dimension,
             "topic_source": next_topic_source,
@@ -575,6 +587,7 @@ class InsightSkill:
                 "confidence": confidence,
             },
             "report": report,
+            "message": message,
             "should_archive": should_archive,
             "archive_reason": archive_reason,
         }
@@ -655,6 +668,13 @@ def _run_repl(user_name: str) -> int:
             report = result.get("report")
             if isinstance(report, str) and report.strip():
                 print(report)
+            else:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if result.get("type") == "archive":
+            message = result.get("message")
+            if isinstance(message, str) and message.strip():
+                print(message)
             else:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
