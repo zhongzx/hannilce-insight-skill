@@ -59,6 +59,7 @@ class TopicGeneratorV2:
 
         settings = load_openrouter_settings()
         topic = None
+        source = "fallback"
         if settings:
             topic = self._generate_topic_with_llm(
                 settings=settings,
@@ -69,14 +70,19 @@ class TopicGeneratorV2:
                 birth_yyyymm=birth_yyyymm,
                 occupation=occupation,
             )
+            if topic is not None and topic not in asked_topics:
+                source = "openrouter"
 
         if topic is None or topic in asked_topics:
-            topic = self._fallback_topic(target_dimension)
+            topic = self._fallback_topic(
+                target_dimension=target_dimension,
+                asked_topics=asked_topics,
+            )
 
         return {
             "topic": topic,
             "dimension": target_dimension,
-            "source": "llm_v2",
+            "source": source,
         }
 
     def _load_seed_categories(self) -> list[str]:
@@ -270,11 +276,31 @@ class TopicGeneratorV2:
         first_line = content.strip().splitlines()[0].strip()
         return first_line or None
 
-    def _fallback_topic(self, target_dimension: str) -> str:
-        fallback_map = {
-            "EI": "你最近一次和别人相处让你感到“充电”的时刻是什么？当时发生了什么？",
-            "SN": "你做决定时更看重具体细节还是整体方向？能用一个最近的例子说明吗？",
-            "TF": "最近有一件让你纠结的事吗？你当时更在意道理还是更在意感受？",
-            "JP": "你更喜欢把事情提前规划好，还是边走边调整？最近一次体现这一点的经历是什么？",
+    def _fallback_topic(self, *, target_dimension: str, asked_topics: set[str]) -> str:
+        fallback_map: dict[str, list[str]] = {
+            "EI": [
+                "你最近一次和别人相处让你感到“充电”的时刻是什么？当时发生了什么？",
+                "如果让你选一个更能让你恢复能量的方式：独处还是社交？能讲讲最近一次的例子吗？",
+                "当你压力很大时，你更倾向于找人聊聊还是自己消化？最近一次你是怎么做的？",
+            ],
+            "SN": [
+                "你做决定时更看重具体细节还是整体方向？能用一个最近的例子说明吗？",
+                "你更喜欢基于过往经验做判断，还是愿意尝试新方法？最近一次你做了怎样的选择？",
+                "你更享受把问题拆成可执行的小步骤，还是先把愿景画出来再推进？举个最近的例子。",
+            ],
+            "TF": [
+                "最近有一件让你纠结的事吗？你当时更在意道理还是更在意感受？",
+                "当你和别人意见冲突时，你更在意把道理讲清楚，还是先照顾彼此的感受？举个例子。",
+                "你做评价或决策时，更常用“是否合理”还是“是否合适/舒服”来判断？最近一次是什么？",
+            ],
+            "JP": [
+                "你更喜欢把事情提前规划好，还是边走边调整？最近一次体现这一点的经历是什么？",
+                "你更习惯把任务列清单逐项完成，还是先动手做着看再整理？最近一次你怎么推进的？",
+                "当计划被打乱时，你通常会感到焦虑还是兴奋？最近一次计划变化你是怎么应对的？",
+            ],
         }
-        return fallback_map.get(target_dimension, fallback_map["EI"])
+
+        candidates = fallback_map.get(target_dimension, fallback_map["EI"])
+        unused = [q for q in candidates if q not in asked_topics]
+        pool = unused or candidates
+        return random.choice(pool)
