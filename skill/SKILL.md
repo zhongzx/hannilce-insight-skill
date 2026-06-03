@@ -1,17 +1,17 @@
 ---
 name: hannilce-insight
-label: 汉尼可儿读心术
-description: 基于多轮话题对话的 MBTI 性格分析技能。通过动态话题引导，在对话中解析 EI/SN/TF/JP 四维偏好，最终输出 MBTI 性格报告。触发方式：/MBTI
+label: 汉尼尔斯读心术
+description: 基于多轮话题对话的 MBTI 性格分析技能（以 DESIGN.md 为准）。触发方式：/MBTI
 triggers:
   - /MBTI
 commands:
   - name: /MBTI
     description: 开始 MBTI 性格分析，用法：/MBTI <姓名>
 handler:
-  command: "cd ${SKILL_DIR} && PYTHONPATH=${SKILL_DIR} python mbti/insight_skill.py"
+  command: "cd ${SKILL_DIR} && PYTHONPATH=${SKILL_DIR} python3 mbti/insight_skill.py"
 ---
 
-# 汉尼可儿读心术（Hannilce Insight）
+# 汉尼尔斯读心术（Hannilce Insight）
 
 > 从《沉默的羔羊》的审讯室里汲取灵感——两个人隔着玻璃，互相拆解对方的防线。
 > 优雅、克制、暗流涌动。
@@ -41,80 +41,9 @@ handler:
 /MBTI 王五
 ```
 
-- 每个用户有独立的分析会话，通过**姓名 + 首次认证时间戳哈希**作为唯一标识
-- 同一用户重复触发：从上次中断处继续（唤醒机制）
-- 不同姓名：创建新的分析会话
-
----
-
-## 技术架构
-
-### 数据存储
-
-- **数据库**：SQLite + WAL 模式
-- **路径**：`/home/gem/.aily/workspace/mbti/sessions.db`
-- **会话标识**：用户姓名 + 首次认证时间戳的 SHA256 哈希（前16位）
-
-### 表结构
-
-| 表名 | 用途 |
-|------|------|
-| `sessions` | 会话主记录，用户信息、当前状态 |
-| `topics` | 话题记录，已用/待用/封存 |
-| `messages` | 原始对话消息 |
-| `dimension_scores` | 各维度累计得分 |
-| `quality_logs` | 质量评分日志 |
-
-### 新闻采集（定时任务）
-
-- **采集频率**：每天 11:00 / 15:00 / 19:00 / 23:00
-- **采集源**：虎嗅、财新、36氪、今日头条、妈妈网
-- **存储路径**：`/home/gem/.aily/workspace/mbti/seed_data/scraped_topics.json`
-- **失效机制**：采集后24小时自动失效
-- **兜底方案**：内置10个通用话题池，采集失败时启用
-
-### 话题维度映射
-
-话题 → MBTI维度映射框架（待迭代优化）：
-
-| 维度 | 话题倾向 |
-|------|---------|
-| E/I（外/内向） | 社交话题 / 独处话题 |
-| S/N（实感/直觉） | 具体事件 / 抽象哲思 |
-| T/F（思考/情感） | 理性分析 / 价值判断 |
-| J/P（判断/知觉） | 计划执行 / 开放探索 |
-
-### 质量评估（双层评分）
-
-**Token层**：单轮对话 Token 数量
-- 高质量区间：100-500 tokens/轮
-- 低于50或高于800需警惕
-
-**语义层**：语义丰富度、观点鲜明度、情感真诚度
-- 采用独立 LLM 评分（不干预话题走向）
-
-### 置信度模型
-
-```
-置信度 = Token量因子 × 质量分因子 × 一致性因子
-```
-
-- **Token量因子**：对话轮次越多越可靠
-- **质量分因子**：语义评分加权
-- **一致性因子**：多轮对话结果稳定性
-
-### 结束条件
-
-**主动结束**（同时满足）：
-- 对话轮次 ≥ 8 轮
-- 置信度 ≥ 阈值（初版设为 0.7）
-- 四维均有数据覆盖
-
-**被动结束**（封存策略）：
-- 连续下降触发封存，阈值：
-  - `decline_delta ≥ 0.3` → 严重，连续2轮触发
-  - `0.15 ≤ decline_delta < 0.3` → 中度，连续3-4轮触发
-  - `decline_delta < 0.15` → 轻微，连续5轮触发
+- 数据默认本地持久化到 SQLite：`~/.hermes/mbti/sessions.db`
+- 话题由 LLM 动态生成，优先使用本地种子缓存作为锚点（`seed_data/scraped_topics.json`）
+- 详细设计口径以 [DESIGN.md](../docs/01-project/DESIGN.md) 为准
 
 ---
 
@@ -161,7 +90,6 @@ J/P ████████████░░░░░░░ 6:4 → 判断型
 
 ## 依赖文件
 
-- `/home/gem/.aily/workspace/mbti/references/db_schema.md` — 数据库表结构
-- `/home/gem/.aily/workspace/mbti/references/topic_pool.md` — 内置话题池
-- `/home/gem/.aily/workspace/mbti/references/news_source_map.md` — 新闻源映射
-- `/home/gem/.aily/workspace/mbti/scripts/` — 核心脚本目录
+- [DESIGN.md](../docs/01-project/DESIGN.md) — 设计冻结口径
+- [ARCHITECTURE.md](../docs/01-project/ARCHITECTURE.md) — 架构口径（与 DESIGN 对齐）
+- [IMPLEMENTATION_PLAN.md](../docs/01-project/IMPLEMENTATION_PLAN.md) — 实施方案（与 DESIGN 对齐）

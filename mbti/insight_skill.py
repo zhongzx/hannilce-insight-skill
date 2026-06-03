@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from mbti import db
 from mbti.models import MBTIProfile, make_user_id
 from mbti.quality_controller import QualityController
 from mbti.session_manager import SessionManager
-from mbti.topic_generator import TopicGenerator
+from mbti.topic_generator_v2 import TopicGeneratorV2
 from openrouter_client import (
     call_chat_completion,
     load_openrouter_settings,
@@ -382,7 +382,7 @@ class InsightSkill:
 
     def __init__(self):
         self._sm: SessionManager | None = None
-        self._tg: TopicGenerator | None = None
+        self._tg: TopicGeneratorV2 | None = None
         self._qc: QualityController | None = None
         self._current_topic: str | None = None
         self._current_dimension: str | None = None
@@ -395,13 +395,17 @@ class InsightSkill:
         """初始化子模块。"""
         db.init_db()
         self._sm = SessionManager()
-        self._tg = TopicGenerator()
+        self._tg = TopicGeneratorV2()
         self._qc = QualityController()
 
     def handle_trigger(
         self,
         user_name: str,
         timestamp_iso: str,
+        *,
+        gender: str | None = None,
+        birth_yyyymm: str | None = None,
+        occupation: str | None = None,
     ) -> dict:
         """
         处理 /MBTI 触发。
@@ -423,12 +427,26 @@ class InsightSkill:
         self.init()
 
         # 获取/创建会话
-        ctx = self._sm.get_or_create(user_name, timestamp_iso)
+        ctx = self._sm.get_or_create(
+            user_name,
+            timestamp_iso,
+            gender=gender,
+            birth_yyyymm=birth_yyyymm,
+            occupation=occupation,
+        )
         profile: MBTIProfile = ctx["profile"]
         is_new = ctx["is_new"]
 
-        # 生成话题
-        next_topic = self._tg.get_next(user_id=profile.user_id)
+        avoid_dimensions = [
+            key
+            for key, value in profile.dimension_confidences.model_dump().items()
+            if isinstance(value, float) and value >= 0.7
+        ]
+
+        next_topic = self._tg.get_next(
+            user_id=profile.user_id,
+            avoid_dimensions=avoid_dimensions,
+        )
         topic = next_topic["topic"]
         dimension = next_topic["dimension"]
         topic_source = next_topic.get("source")
@@ -486,10 +504,12 @@ class InsightSkill:
             user_id=user_id,
             topic=self._current_topic or "",
             user_response=user_response,
+            dimension=self._current_dimension,
         )
         token_score = quality_result["token_score"]
         semantic_score = quality_result["semantic_score"]
         confidence = quality_result["confidence"]
+        round_score = quality_result.get("round_score")
         should_archive = quality_result["should_archive"]
         archive_reason = quality_result["archive_reason"]
 
@@ -511,6 +531,8 @@ class InsightSkill:
             user_id=user_id,
             dimension=self._current_dimension or "EI",
             score=(semantic_score * 0.6 + token_score * 0.4),  # 综合评分更新维度
+            round_score=float(round_score) if isinstance(round_score, float) else None,
+            session_confidence=confidence,
         )
 
         # 4. 检查是否应输出报告
@@ -525,7 +547,15 @@ class InsightSkill:
             report = _render_report(profile, round_count)
         else:
             # 获取下一个话题
-            next_topic = self._tg.get_next(user_id=user_id)
+            avoid_dimensions = [
+                key
+                for key, value in profile.dimension_confidences.model_dump().items()
+                if isinstance(value, float) and value >= 0.7
+            ]
+            next_topic = self._tg.get_next(
+                user_id=user_id,
+                avoid_dimensions=avoid_dimensions,
+            )
             topic = next_topic["topic"]
             dimension = next_topic["dimension"]
             next_topic_source = next_topic.get("source")
@@ -583,14 +613,14 @@ def run(user_name: str, timestamp_iso: str | None = None) -> dict:
         首次触发结果（next_topic）
     """
     if timestamp_iso is None:
-        timestamp_iso = datetime.now(timezone.utc).isoformat()
+        timestamp_iso = datetime.now(UTC).isoformat()
 
     skill = InsightSkill()
     return skill.handle_trigger(user_name, timestamp_iso)
 
 
 def _run_repl(user_name: str) -> int:
-    timestamp_iso = datetime.now(timezone.utc).isoformat()
+    timestamp_iso = datetime.now(UTC).isoformat()
     skill = InsightSkill()
 
     trigger_result = skill.handle_trigger(user_name, timestamp_iso)
@@ -658,9 +688,126 @@ def _run_repl(user_name: str) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+def _as_str(value: object) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return None
+
+
+def _extract_text(payload: dict[str, object]) -> str | None:
+    for key in ("text", "input", "message", "content", "user_response"):
+        value = _as_str(payload.get(key))
+        if value:
+            return value
+    return None
+
+
+def _extract_session_id(payload: dict[str, object]) -> str:
+    for key in ("session_id", "session", "conversation_id", "thread_id", "run_id"):
+        value = _as_str(payload.get(key))
+        if value:
+            return value
+    return datetime.now(UTC).isoformat()
+
+
+def _extract_user_name(payload: dict[str, object], text: str | None) -> str | None:
+    for key in ("user_name", "name", "user"):
+        value = _as_str(payload.get(key))
+        if value:
+            return value
+    if text:
+        return parse_trigger(text)
+    return None
+
+
+def _is_trigger(text: str | None, payload: dict[str, object]) -> bool:
+    event_type = _as_str(payload.get("type")) or _as_str(payload.get("event"))
+    if event_type:
+        return event_type.lower() in {"trigger", "command", "start"}
+    if text:
+        return parse_trigger(text) is not None
+    return False
+
+
+def _extract_profile_fields(
+    payload: dict[str, object],
+) -> tuple[str | None, str | None, str | None]:
+    gender = _as_str(payload.get("gender")) or _as_str(payload.get("sex"))
+    birth_yyyymm = _as_str(payload.get("birth_yyyymm")) or _as_str(payload.get("birth"))
+    occupation = _as_str(payload.get("occupation")) or _as_str(payload.get("job"))
+    return gender, birth_yyyymm, occupation
+
+
+def _run_skill_loop() -> int:
+    import sys
+
+    skills: dict[str, InsightSkill] = {}
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        try:
+            payload_obj = json.loads(line)
+            if not isinstance(payload_obj, dict):
+                raise ValueError("payload must be a JSON object")
+            payload: dict[str, object] = payload_obj
+
+            text = _extract_text(payload)
+            session_id = _extract_session_id(payload)
+            user_name = _extract_user_name(payload, text)
+            gender, birth_yyyymm, occupation = _extract_profile_fields(payload)
+
+            if not user_name:
+                raise ValueError("missing user_name")
+
+            key = f"{user_name}:{session_id}"
+            is_trigger = _is_trigger(text, payload)
+
+            if is_trigger:
+                skill = skills.get(key)
+                if skill is None:
+                    skill = InsightSkill()
+                    skills[key] = skill
+                result = skill.handle_trigger(
+                    user_name=user_name,
+                    timestamp_iso=session_id,
+                    gender=gender,
+                    birth_yyyymm=birth_yyyymm,
+                    occupation=occupation,
+                )
+            else:
+                skill = skills.get(key)
+                if skill is None:
+                    result = {
+                        "type": "error",
+                        "error": "missing_session_state",
+                        "message": "会话状态缺失，请重新发送 /MBTI <姓名> 触发。",
+                    }
+                else:
+                    user_response = text or ""
+                    result = skill.handle_response(
+                        user_name=user_name,
+                        timestamp_iso=session_id,
+                        user_response=user_response,
+                    )
+
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+        except Exception as exc:  # noqa: BLE001
+            error_result = {"type": "error", "error": str(exc)}
+            print(json.dumps(error_result, ensure_ascii=False), flush=True)
+
+    return 0
+
+
 if __name__ == "__main__":
     # 简单测试
     import sys
+
+    if len(sys.argv) == 1 and not sys.stdin.isatty():
+        sys.exit(_run_skill_loop())
 
     if len(sys.argv) >= 2 and sys.argv[1] == "--repl":
         if len(sys.argv) >= 3:

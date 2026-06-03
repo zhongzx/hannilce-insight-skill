@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 
-class MBTIDimension(str, Enum):
+class MBTIDimension(StrEnum):
     """MBTI 四维维度"""
 
     EI = "EI"  # 外向 / 内向
@@ -27,7 +27,7 @@ class MBTIDimension(str, Enum):
     JP = "JP"  # 判断 / 知觉
 
 
-class TopicSource(str, Enum):
+class TopicSource(StrEnum):
     """话题来源"""
 
     BUILTIN = "builtin"  # 内置话题池
@@ -105,14 +105,39 @@ class Dimensions(BaseModel):
         return "J" if self.JP > 0.5 else "P"
 
 
+class DimensionConfidences(BaseModel):
+    EI: float = Field(default=0.0, ge=0.0, le=1.0)
+    SN: float = Field(default=0.0, ge=0.0, le=1.0)
+    TF: float = Field(default=0.0, ge=0.0, le=1.0)
+    JP: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    def to_json(self) -> str:
+        return self.model_dump_json()
+
+    @classmethod
+    def from_json(cls, raw: str) -> DimensionConfidences:
+        return cls.model_validate_json(raw)
+
+    def update(self, dimension: MBTIDimension, signal: float) -> None:
+        current = getattr(self, dimension.value)
+        clipped = max(0.0, min(1.0, signal))
+        setattr(self, dimension.value, round(current * 0.7 + clipped * 0.3, 4))
+
+
 class MBTIProfile(BaseModel):
     """用户 MBTI 画像"""
 
     user_id: str
     name: str
+    gender: str | None = None
+    birth_yyyymm: str | None = None
+    occupation: str | None = None
     final_type: str | None = None
     confidence: float = 0.0
     dimensions: Dimensions = Field(default_factory=Dimensions)
+    dimension_confidences: DimensionConfidences = Field(
+        default_factory=DimensionConfidences
+    )
     created_at: str
     updated_at: str
     archived: int = 0
@@ -120,13 +145,24 @@ class MBTIProfile(BaseModel):
     @classmethod
     def from_db_row(cls, row: dict) -> MBTIProfile:
         """从 SQLite 行字典构建模型。"""
-        dimensions = Dimensions.from_json(row.get("dimensions", "{}"))
+        dimensions_raw = row.get("dimensions")
+        dimensions = Dimensions.from_json(
+            dimensions_raw if isinstance(dimensions_raw, str) else "{}"
+        )
+        confidences_raw = row.get("dimension_confidences")
+        dimension_confidences = DimensionConfidences.from_json(
+            confidences_raw if isinstance(confidences_raw, str) else "{}"
+        )
         return cls(
             user_id=row["user_id"],
             name=row["name"],
+            gender=row.get("gender"),
+            birth_yyyymm=row.get("birth_yyyymm"),
+            occupation=row.get("occupation"),
             final_type=row.get("final_type"),
             confidence=row.get("confidence", 0.0),
             dimensions=dimensions,
+            dimension_confidences=dimension_confidences,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             archived=row.get("archived", 0),
@@ -141,9 +177,13 @@ class MBTIProfile(BaseModel):
             {
                 "user_id": self.user_id,
                 "name": self.name,
+                "gender": self.gender,
+                "birth_yyyymm": self.birth_yyyymm,
+                "occupation": self.occupation,
                 "final_type": self.final_type,
                 "confidence": self.confidence,
                 "dimensions": self.dimensions.model_dump(),
+                "dimension_confidences": self.dimension_confidences.model_dump(),
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "archived": self.archived,
@@ -157,6 +197,9 @@ class MBTIProfile(BaseModel):
         return {
             "user_id": self.user_id,
             "name": self.name,
+            "gender": self.gender,
+            "birth_yyyymm": self.birth_yyyymm,
+            "occupation": self.occupation,
             "mbti_type": self.final_type or "待推断",
             "confidence": self.confidence,
             "dimensions": {
@@ -168,6 +211,12 @@ class MBTIProfile(BaseModel):
                 "SN_letter": self.dimensions.SN_letter,
                 "TF_letter": self.dimensions.TF_letter,
                 "JP_letter": self.dimensions.JP_letter,
+            },
+            "dimension_confidences": {
+                "EI": self.dimension_confidences.EI,
+                "SN": self.dimension_confidences.SN,
+                "TF": self.dimension_confidences.TF,
+                "JP": self.dimension_confidences.JP,
             },
             "archived": bool(self.archived),
         }
@@ -265,7 +314,7 @@ class TopicPool(BaseModel):
         """检查话题是否已过期。"""
         if not self.expires_at:
             return False
-        return datetime.now(timezone.utc).isoformat() > self.expires_at
+        return datetime.now(UTC).isoformat() > self.expires_at
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +345,7 @@ class SlidingWindow(BaseModel):
         self.recent_scores.append(score)
         if len(self.recent_scores) > self.window_size:
             self.recent_scores.pop(0)
-        self.last_updated = datetime.now(timezone.utc).isoformat()
+        self.last_updated = datetime.now(UTC).isoformat()
 
     def get_decline_delta(self) -> float | None:
         """
