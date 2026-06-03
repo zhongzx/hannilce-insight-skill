@@ -16,7 +16,10 @@ MBTI Insight Skill — 主入口模块
 from __future__ import annotations
 
 import json
+import os
 import re
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
 from mbti import db
@@ -263,8 +266,93 @@ _DEFAULT_TYPE_DESC = {
 }
 
 
+def _call_openrouter_chat_completion(
+    *,
+    api_key: str,
+    model: str,
+    messages: list[dict[str, str]],
+    temperature: float = 0.3,
+    timeout_seconds: float = 45.0,
+) -> str | None:
+    url = os.environ.get(
+        "OPENROUTER_BASE_URL",
+        "https://openrouter.ai/api/v1/chat/completions",
+    )
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url=url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        return None
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    choices = result.get("choices", [])
+    if not choices:
+        return None
+    message = choices[0].get("message", {})
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    return content.strip()
+
+
 def _render_report(profile: MBTIProfile, round_count: int) -> str:
     """渲染 MBTI 分析报告。"""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if api_key:
+        model = os.environ.get("OPENROUTER_MODEL", "openrouter/auto")
+        history = db.get_conversation_history(profile.user_id, limit=50)
+        history_lines = "\n".join(
+            f"- Q: {item.get('topic', '')}\n  A: {item.get('user_response', '')}"
+            for item in history
+        )
+        prompt = (
+            "你是一个 MBTI 性格分析师。请基于用户的多轮对话记录与当前画像，"
+            "输出一份结构化、可读性强的中文 Markdown 报告。\n\n"
+            "要求：\n"
+            "1) 报告必须包含：四维分析、类型推断与置信度、人格特征、职业倾向、"
+            "关系与沟通、成长建议\n"
+            "2) 用具体措辞引用对话中的线索（不要捏造不存在的细节）\n"
+            "3) 如果信息不足，明确说明需要补充什么信息\n"
+            "4) 只输出 Markdown，不要输出代码块外的解释\n\n"
+            f"用户：{profile.name}\n"
+            f"轮数：{round_count}\n"
+            f"当前画像摘要：{json.dumps(profile.to_summary(), ensure_ascii=False)}\n\n"
+            "对话记录：\n"
+            f"{history_lines or '（无对话记录）'}\n"
+        )
+        content = _call_openrouter_chat_completion(
+            api_key=api_key,
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你擅长根据对话证据做 MBTI 分析并输出中文报告。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        if content:
+            return content
+
     mbti_type = profile.final_type or "XXXX"
     type_info = _MBTI_TYPE_DESCRIPTIONS.get(mbti_type, _DEFAULT_TYPE_DESC)
 
