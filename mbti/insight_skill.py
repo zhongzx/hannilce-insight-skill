@@ -607,16 +607,30 @@ class InsightSkill:
     def _build_profile_question(self, *, user_name: str, field: str) -> str:
         if field == "gender":
             return (
-                f"{user_name}，我先确认一下，你更愿意我怎么称呼你：男、女，"
-                "还是其他/不方便说？你也可以直接回“跳过”。"
+                f"{user_name}，我先确认一下，你更愿意我怎么称呼你？\n"
+                "1) 男\n"
+                "2) 女\n"
+                "3) 其他\n"
+                "4) 跳过\n"
+                "直接回数字即可。"
             )
         if field == "birth_yyyymm":
             return (
-                "你大概是哪年哪月出生的呀？我只需要到年月就行，"
-                "比如 199803。也可以回“跳过”。"
+                "你大概是哪年哪月出生的呀？我只需要到年月就行。\n"
+                "请按 YYYYMM 输入（例：199803），或输入 0 跳过。"
             )
         if field == "occupation":
-            return "你现在主要在做什么工作/方向呀？一句话就行，也可以回“跳过”。"
+            return (
+                "你现在主要做什么方向？选最接近的一项就行：\n"
+                "1) 技术/产品\n"
+                "2) 运营/市场\n"
+                "3) 金融\n"
+                "4) 教育\n"
+                "5) 医疗\n"
+                "6) 政企/事业单位\n"
+                "7) 其他\n"
+                "0) 跳过"
+            )
         return "你可以简单说一句，也可以回“跳过”。"
 
     def _handle_profile_collection_turn(
@@ -639,8 +653,7 @@ class InsightSkill:
                 value = self._parse_gender(user_response)
                 if value is None:
                     topic = (
-                        "我只想知道你更愿意我怎么称呼你就行：男/女/其他/不方便说。"
-                        "你也可以回“跳过”。"
+                        "我只想确认一下称呼偏好：回 1(男) / 2(女) / 3(其他) / 4(跳过)。"
                     )
                     self._current_topic = topic
                     return {
@@ -659,7 +672,7 @@ class InsightSkill:
             elif field == "birth_yyyymm":
                 value = self._parse_birth_yyyymm(user_response)
                 if value is None:
-                    topic = "我只需要到年月就行，比如 199803。你也可以直接回“跳过”。"
+                    topic = "请按 YYYYMM 输入（例：199803），或输入 0 跳过。"
                     self._current_topic = topic
                     return {
                         "type": "next_topic",
@@ -677,6 +690,20 @@ class InsightSkill:
             elif field == "occupation":
                 value = self._parse_occupation(user_response)
                 if value is None:
+                    topic = "回 1~7 选项或输入 0 跳过就行。"
+                    self._current_topic = topic
+                    return {
+                        "type": "next_topic",
+                        "topic": topic,
+                        "dimension": "",
+                        "topic_source": "collect_profile_retry",
+                        "summary": None,
+                        "report": None,
+                        "message": None,
+                        "should_archive": False,
+                        "archive_reason": "继续",
+                    }
+                if value == "其他":
                     self._skipped_profile_fields.add(field)
                     self._pending_profile_field = None
                 else:
@@ -730,25 +757,34 @@ class InsightSkill:
 
     def _is_skip_response(self, text: str) -> bool:
         cleaned = text.strip().lower()
-        return cleaned in {"跳过", "不方便", "不方便说", "保密", "略过", "skip"}
+        return cleaned in {
+            "0",
+            "4",
+            "跳过",
+            "不方便",
+            "不方便说",
+            "保密",
+            "略过",
+            "skip",
+        }
 
     def _parse_gender(self, text: str) -> str | None:
         cleaned = text.strip()
         if not cleaned:
             return None
-        if re.search(r"(男|男性|男生)$", cleaned):
+        if cleaned in {"1", "男"} or re.search(r"(男|男性|男生)$", cleaned):
             return "男"
-        if re.search(r"(女|女性|女生)$", cleaned):
+        if cleaned in {"2", "女"} or re.search(r"(女|女性|女生)$", cleaned):
             return "女"
-        if re.search(r"(其他|非二元|不确定)$", cleaned):
+        if cleaned in {"3", "其他"} or re.search(r"(其他|非二元|不确定)$", cleaned):
             return "其他"
-        if re.search(r"(不方便|保密|不想说)$", cleaned):
-            return None
         return None
 
     def _parse_birth_yyyymm(self, text: str) -> str | None:
         cleaned = text.strip()
         if not cleaned:
+            return None
+        if cleaned == "0":
             return None
         match = re.search(
             r"(19\d{2}|20\d{2})\D{0,3}([01]?\d)",
@@ -773,6 +809,19 @@ class InsightSkill:
         cleaned = text.strip()
         if not cleaned:
             return None
+        if cleaned == "0":
+            return None
+        mapping = {
+            "1": "技术/产品",
+            "2": "运营/市场",
+            "3": "金融",
+            "4": "教育",
+            "5": "医疗",
+            "6": "政企/事业单位",
+            "7": "其他",
+        }
+        if cleaned in mapping:
+            return mapping[cleaned]
         if len(cleaned) > 60:
             cleaned = cleaned[:60]
         return cleaned
