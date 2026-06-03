@@ -315,7 +315,12 @@ class TopicGenerator:
             return None
 
         profile_row = db.get_profile(user_id)
-        dimensions: dict[str, float] = {"EI": 0.5, "SN": 0.5, "TF": 0.5, "JP": 0.5}
+        dimensions: dict[str, float] = {
+            "EI": 0.5,
+            "SN": 0.5,
+            "TF": 0.5,
+            "JP": 0.5,
+        }
         if profile_row and profile_row.get("dimensions"):
             with contextlib.suppress(json.JSONDecodeError):
                 dimensions.update(json.loads(profile_row["dimensions"]))

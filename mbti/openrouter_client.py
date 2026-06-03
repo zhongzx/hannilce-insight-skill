@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -63,6 +65,8 @@ def call_chat_completion(
     temperature: float = 0.3,
     timeout_seconds: float = 45.0,
 ) -> str | None:
+    debug_enabled = os.environ.get("OPENROUTER_DEBUG") == "1"
+    start_time = time.monotonic()
     payload = {
         "model": settings.model,
         "messages": messages,
@@ -84,7 +88,21 @@ def call_chat_completion(
             timeout=timeout_seconds,
         ) as response:
             raw = response.read().decode("utf-8")
+            if debug_enabled:
+                elapsed_ms = int((time.monotonic() - start_time) * 1000)
+                print(
+                    f"[OPENROUTER] ok model={settings.model} "
+                    f"status={getattr(response, 'status', 'unknown')} "
+                    f"elapsed_ms={elapsed_ms}",
+                    file=sys.stderr,
+                )
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        if debug_enabled:
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            print(
+                f"[OPENROUTER] failed model={settings.model} elapsed_ms={elapsed_ms}",
+                file=sys.stderr,
+            )
         return None
 
     try:

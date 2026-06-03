@@ -21,7 +21,10 @@ from datetime import datetime, timezone
 
 from mbti import db
 from mbti.models import MBTIProfile, make_user_id
-from mbti.openrouter_client import call_chat_completion, load_openrouter_settings
+from mbti.openrouter_client import (
+    call_chat_completion,
+    load_openrouter_settings,
+)
 from mbti.quality_controller import QualityController
 from mbti.session_manager import SessionManager
 from mbti.topic_generator import TopicGenerator
@@ -428,6 +431,7 @@ class InsightSkill:
         next_topic = self._tg.get_next(user_id=profile.user_id)
         topic = next_topic["topic"]
         dimension = next_topic["dimension"]
+        topic_source = next_topic.get("source")
         self._current_topic = topic
         self._current_dimension = dimension
 
@@ -440,6 +444,7 @@ class InsightSkill:
             "type": "next_topic",
             "topic": topic,
             "dimension": dimension,
+            "topic_source": topic_source,
             "is_new": is_new,
             "profile": profile.to_summary(),
             "wakeup_context": wakeup_context,
@@ -513,6 +518,7 @@ class InsightSkill:
         report = None
         topic = None
         dimension = None
+        next_topic_source = None
 
         if should_archive:
             # 生成报告
@@ -522,6 +528,7 @@ class InsightSkill:
             next_topic = self._tg.get_next(user_id=user_id)
             topic = next_topic["topic"]
             dimension = next_topic["dimension"]
+            next_topic_source = next_topic.get("source")
             self._current_topic = topic
             self._current_dimension = dimension
 
@@ -529,10 +536,12 @@ class InsightSkill:
             "type": "report" if should_archive else "next_topic",
             "topic": topic,
             "dimension": dimension,
+            "topic_source": next_topic_source,
             "profile": profile.to_summary(),
             "quality": {
                 "token_score": token_score,
                 "semantic_score": semantic_score,
+                "semantic_source": quality_result.get("semantic_source"),
                 "confidence": confidence,
             },
             "report": report,
@@ -586,8 +595,12 @@ def _run_repl(user_name: str) -> int:
 
     trigger_result = skill.handle_trigger(user_name, timestamp_iso)
     topic = trigger_result.get("topic")
+    topic_source = trigger_result.get("topic_source")
     if isinstance(topic, str) and topic.strip():
-        print(f"话题：{topic}")
+        if topic_source:
+            print(f"话题：{topic}  (source={topic_source})")
+        else:
+            print(f"话题：{topic}")
     else:
         print(json.dumps(trigger_result, ensure_ascii=False, indent=2))
 
@@ -616,9 +629,31 @@ def _run_repl(user_name: str) -> int:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
 
+        quality = result.get("quality") or {}
+        profile = result.get("profile") or {}
+        dims = profile.get("dimensions") or {}
+        print(
+            "\n本轮评分："
+            f"token={quality.get('token_score')} "
+            f"semantic={quality.get('semantic_score')} "
+            f"(source={quality.get('semantic_source')}) "
+            f"confidence={quality.get('confidence')}"
+        )
+        print(
+            "当前画像："
+            f"type={profile.get('mbti_type')} "
+            f"profile_conf={profile.get('confidence')} "
+            f"EI={dims.get('EI')} SN={dims.get('SN')} "
+            f"TF={dims.get('TF')} JP={dims.get('JP')}"
+        )
+
         next_topic = result.get("topic")
+        next_topic_source = result.get("topic_source")
         if isinstance(next_topic, str) and next_topic.strip():
-            print(f"\n话题：{next_topic}")
+            if next_topic_source:
+                print(f"\n话题：{next_topic}  (source={next_topic_source})")
+            else:
+                print(f"\n话题：{next_topic}")
         else:
             print(json.dumps(result, ensure_ascii=False, indent=2))
 

@@ -50,7 +50,14 @@ class QualityController:
             topic="你更关注细节还是可能性？",
             user_response="我觉得两者都重要，但具体要看场景...",
         )
-        # result: {"token_score", "semantic_score", "confidence", "should_archive", "archive_reason"}
+        # result: {
+        #   "token_score",
+        #   "semantic_score",
+        #   "semantic_source",
+        #   "confidence",
+        #   "should_archive",
+        #   "archive_reason",
+        # }
     """
 
     def __init__(self):
@@ -97,6 +104,7 @@ class QualityController:
         # 语义层评分
         if llm_semantic_score is not None:
             semantic_score = llm_semantic_score
+            semantic_source = "provided"
         else:
             semantic_score = self._try_score_semantic_with_llm(
                 topic=topic,
@@ -104,6 +112,9 @@ class QualityController:
             )
             if semantic_score is None:
                 semantic_score = _DEFAULT_SEMANTIC_SCORE
+                semantic_source = "default"
+            else:
+                semantic_source = "llm"
 
         # 综合置信度：三因子模型
         confidence = self._compute_confidence(token_score, semantic_score)
@@ -119,6 +130,7 @@ class QualityController:
         return {
             "token_score": round(token_score, 4),
             "semantic_score": round(semantic_score, 4),
+            "semantic_source": semantic_source,
             "confidence": round(confidence, 4),
             "should_archive": should_archive,
             "archive_reason": reason,
@@ -134,7 +146,10 @@ class QualityController:
         if not settings:
             return None
 
-        prompt = self.build_semantic_prompt(topic=topic, user_response=user_response)
+        prompt = self.build_semantic_prompt(
+            topic=topic,
+            user_response=user_response,
+        )
         content = call_chat_completion(
             settings=settings,
             messages=[
@@ -242,7 +257,11 @@ class QualityController:
         综合置信度：三因子模型。
 
         公式：
-            confidence = (token_score * 0.3 + semantic_score * 0.5 + recency * 0.2)
+            confidence = (
+                token_score * 0.3
+                + semantic_score * 0.5
+                + recency * 0.2
+            )
         其中 recency = min(round_count * 0.05, 0.95)，对话越多越自信
 
         Args:
@@ -289,10 +308,16 @@ class QualityController:
         conn = db.get_connection()
         conn.execute(
             """
-            INSERT OR REPLACE INTO sliding_window (user_id, recent_scores, window_size, last_updated)
+            INSERT OR REPLACE INTO sliding_window
+                (user_id, recent_scores, window_size, last_updated)
             VALUES (?, ?, ?, ?)
             """,
-            (sw.user_id, json.dumps(sw.recent_scores), sw.window_size, sw.last_updated),
+            (
+                sw.user_id,
+                json.dumps(sw.recent_scores),
+                sw.window_size,
+                sw.last_updated,
+            ),
         )
         conn.commit()
         conn.close()
