@@ -10,7 +10,6 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -111,7 +110,7 @@ class MBTIProfile(BaseModel):
 
     user_id: str
     name: str
-    final_type: Optional[str] = None
+    final_type: str | None = None
     confidence: float = 0.0
     dimensions: Dimensions = Field(default_factory=Dimensions)
     created_at: str
@@ -182,7 +181,7 @@ class MBTIProfile(BaseModel):
 class ConversationLog(BaseModel):
     """单轮对话记录"""
 
-    id: Optional[int] = None
+    id: int | None = None
     user_id: str
     topic: str
     user_response: str
@@ -209,7 +208,7 @@ class ConversationLog(BaseModel):
 class QualityLog(BaseModel):
     """单轮质量评分记录"""
 
-    id: Optional[int] = None
+    id: int | None = None
     user_id: str
     token_score: float
     semantic_score: float
@@ -228,7 +227,7 @@ class QualityLog(BaseModel):
         )
 
     @property
-    def decline_from_prev(self) -> Optional[float]:
+    def decline_from_prev(self) -> float | None:
         """
         计算与前一轮的下降幅度（供滑动窗口使用）。
         本字段由 QualityController 在查询时计算，不存储。
@@ -244,12 +243,12 @@ class QualityLog(BaseModel):
 class TopicPool(BaseModel):
     """话题池条目"""
 
-    id: Optional[int] = None
+    id: int | None = None
     topic: str
     dimension: str  # E/I/S/N/T/F/J/P
     source: str  # builtin / news
     created_at: str
-    expires_at: Optional[str] = None
+    expires_at: str | None = None
 
     @classmethod
     def from_db_row(cls, row: dict) -> TopicPool:
@@ -299,7 +298,7 @@ class SlidingWindow(BaseModel):
             self.recent_scores.pop(0)
         self.last_updated = datetime.now(timezone.utc).isoformat()
 
-    def get_decline_delta(self) -> Optional[float]:
+    def get_decline_delta(self) -> float | None:
         """
         计算最近 window_size 轮的质量下降幅度。
 
@@ -310,10 +309,11 @@ class SlidingWindow(BaseModel):
         if len(self.recent_scores) < 3:
             return None
         mid = len(self.recent_scores) // 2
-        if mid > 0:
-            first_half = self.recent_scores[:mid]
-        else:
-            first_half = self.recent_scores[:1]
+        first_half = (
+            self.recent_scores[:mid]
+            if mid > 0
+            else self.recent_scores[:1]
+        )
         second_half = self.recent_scores[mid:]
         avg_first = sum(first_half) / len(first_half)
         avg_second = sum(second_half) / len(second_half)
