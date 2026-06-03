@@ -305,6 +305,7 @@ class InsightSkill:
         self._last_summary: str | None = None
         self._pending_profile_field: str | None = None
         self._skipped_profile_fields: set[str] = set()
+        self._pending_birth_confirmation: str | None = None
 
     # -------------------------------------------------------------------------
     # 公共接口
@@ -645,6 +646,16 @@ class InsightSkill:
         if field is None:
             return None
 
+        if field == "birth_yyyymm" and self._pending_birth_confirmation is not None:
+            handled = self._handle_birth_confirmation(
+                user_id=user_id,
+                user_name=user_name,
+                profile=profile,
+                user_response=user_response,
+            )
+            if handled is not None:
+                return handled
+
         if self._is_skip_response(user_response):
             self._skipped_profile_fields.add(field)
             self._pending_profile_field = None
@@ -679,6 +690,21 @@ class InsightSkill:
                         "topic": topic,
                         "dimension": "",
                         "topic_source": "collect_profile_retry",
+                        "summary": None,
+                        "report": None,
+                        "message": None,
+                        "should_archive": False,
+                        "archive_reason": "继续",
+                    }
+                if self._needs_birth_confirmation(value):
+                    self._pending_birth_confirmation = value
+                    topic = self._build_birth_confirmation_question(value)
+                    self._current_topic = topic
+                    return {
+                        "type": "next_topic",
+                        "topic": topic,
+                        "dimension": "",
+                        "topic_source": "collect_profile_confirm",
                         "summary": None,
                         "report": None,
                         "message": None,
@@ -787,11 +813,11 @@ class InsightSkill:
         if cleaned == "0":
             return None
         match = re.search(
-            r"(19\d{2}|20\d{2})\D{0,3}([01]?\d)",
+            r"(18\d{2}|19\d{2}|20\d{2})\D{0,3}([01]?\d)",
             cleaned,
         )
         if not match:
-            match = re.search(r"^(19\d{2}|20\d{2})([01]\d)$", cleaned)
+            match = re.search(r"^(18\d{2}|19\d{2}|20\d{2})([01]\d)$", cleaned)
         if not match:
             return None
         year = int(match.group(1))
@@ -799,11 +825,147 @@ class InsightSkill:
         if month < 1 or month > 12:
             return None
         now = datetime.now(UTC)
-        if year < 1900 or year > now.year:
+        if year < 1850 or year > now.year:
             return None
         if year == now.year and month > now.month:
             return None
         return f"{year:04d}{month:02d}"
+
+    def _needs_birth_confirmation(self, yyyymm: str) -> bool:
+        try:
+            year = int(yyyymm[:4])
+            month = int(yyyymm[4:])
+        except ValueError:
+            return False
+
+        if month < 1 or month > 12:
+            return False
+
+        now = datetime.now(UTC)
+        age = now.year - year - (1 if (now.month, now.day) < (month, 1) else 0)
+        return age > 90
+
+    def _build_birth_confirmation_question(self, yyyymm: str) -> str:
+        year = yyyymm[:4]
+        month = yyyymm[4:]
+        return (
+            f"我看到你输入的是 {yyyymm}（{year}年{month}月）。"
+            "这个年份会让年龄非常大，我怕是你手滑了。\n"
+            "1) 确认就是这个\n"
+            "2) 重新输入\n"
+            "0) 跳过"
+        )
+
+    def _handle_birth_confirmation(
+        self,
+        *,
+        user_id: str,
+        user_name: str,
+        profile: MBTIProfile,
+        user_response: str,
+    ) -> dict[str, object] | None:
+        candidate = self._pending_birth_confirmation
+        if candidate is None:
+            return None
+
+        cleaned = user_response.strip().lower()
+        if cleaned in {"1", "确认", "是", "对"}:
+            db.update_profile(user_id, birth_yyyymm=candidate)
+            self._pending_birth_confirmation = None
+            self._pending_profile_field = None
+            updated_row = db.get_profile(user_id) or profile.model_dump()
+            updated_profile = MBTIProfile.from_db_row(updated_row)
+            next_field = self._next_profile_field_to_collect(updated_profile)
+            if next_field is not None:
+                topic = self._build_profile_question(
+                    user_name=user_name,
+                    field=next_field,
+                )
+                self._pending_profile_field = next_field
+                self._current_topic = topic
+                return {
+                    "type": "next_topic",
+                    "topic": topic,
+                    "dimension": "",
+                    "topic_source": "collect_profile",
+                    "summary": None,
+                    "report": None,
+                    "message": None,
+                    "should_archive": False,
+                    "archive_reason": "继续",
+                }
+
+            next_topic = self._tg.get_next(user_id=user_id)
+            topic = next_topic["topic"]
+            self._current_topic = topic
+            self._current_dimension = None
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": next_topic.get("source"),
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        if cleaned in {"2", "重输", "重新", "重新输入"}:
+            self._pending_birth_confirmation = None
+            topic = "那你再输一次吧：按 YYYYMM 输入（例：199803），或输入 0 跳过。"
+            self._current_topic = topic
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": "collect_profile_retry",
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        if cleaned in {"0", "跳过"}:
+            self._pending_birth_confirmation = None
+            self._skipped_profile_fields.add("birth_yyyymm")
+            self._pending_profile_field = None
+            next_field = self._next_profile_field_to_collect(profile)
+            if next_field is None:
+                return None
+
+            topic = self._build_profile_question(
+                user_name=user_name,
+                field=next_field,
+            )
+            self._pending_profile_field = next_field
+            self._current_topic = topic
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": "collect_profile",
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        topic = "回 1(确认) / 2(重新输入) / 0(跳过) 就行。"
+        self._current_topic = topic
+        return {
+            "type": "next_topic",
+            "topic": topic,
+            "dimension": "",
+            "topic_source": "collect_profile_confirm_retry",
+            "summary": None,
+            "report": None,
+            "message": None,
+            "should_archive": False,
+            "archive_reason": "继续",
+        }
 
     def _parse_occupation(self, text: str) -> str | None:
         cleaned = text.strip()
