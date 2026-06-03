@@ -75,6 +75,10 @@ class SessionManager:
         self,
         user_name: str,
         timestamp_iso: str,
+        *,
+        gender: str | None = None,
+        birth_yyyymm: str | None = None,
+        occupation: str | None = None,
     ) -> dict:
         """
         获取或创建用户会话。
@@ -94,11 +98,25 @@ class SessionManager:
         is_new = not db.profile_exists(user_id)
 
         if is_new:
-            db.save_profile(user_id, user_name)
+            db.save_profile(
+                user_id,
+                user_name,
+                gender=gender,
+                birth_yyyymm=birth_yyyymm,
+                occupation=occupation,
+            )
             profile = models.MBTIProfile.from_db_row(db.get_profile(user_id))
         else:
             profile_row = db.get_profile(user_id)
             profile = models.MBTIProfile.from_db_row(profile_row)
+            if gender or birth_yyyymm or occupation:
+                db.update_profile(
+                    user_id,
+                    gender=gender,
+                    birth_yyyymm=birth_yyyymm,
+                    occupation=occupation,
+                )
+                profile = models.MBTIProfile.from_db_row(db.get_profile(user_id))
 
         history = db.get_conversation_history(user_id, limit=20)
 
@@ -177,7 +195,13 @@ class SessionManager:
         db.log_quality(user_id, token_score, semantic_score, confidence)
 
     def update_dimensions(
-        self, user_id: str, dimension: str, score: float
+        self,
+        user_id: str,
+        dimension: str,
+        score: float,
+        *,
+        round_score: float | None = None,
+        session_confidence: float | None = None,
     ) -> MBTIProfile:
         """
         更新用户画像中的某个维度分值。
@@ -195,6 +219,8 @@ class SessionManager:
 
         dim_enum = models.MBTIDimension(dimension)
         profile.dimensions.update(dim_enum, score)
+        if round_score is not None:
+            profile.dimension_confidences.update(dim_enum, round_score)
 
         # 推断 MBTI 类型（每轮更新）
         inferred_type = profile.dimensions.to_mbti_type()
@@ -202,12 +228,16 @@ class SessionManager:
         # 更新置信度（对话轮数越多置信度越高，上限 0.95）
         history = db.get_conversation_history(user_id, limit=100)
         base_conf = min(0.1 + len(history) * 0.05, 0.95)
+        profile_confidence = (
+            session_confidence if session_confidence is not None else base_conf
+        )
 
         db.update_profile(
             user_id,
             dimensions=profile.dimensions.to_json(),
             final_type=inferred_type,
-            confidence=base_conf,
+            confidence=profile_confidence,
+            dimension_confidences=profile.dimension_confidences.to_json(),
         )
 
         return models.MBTIProfile.from_db_row(db.get_profile(user_id))
