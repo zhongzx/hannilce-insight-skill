@@ -388,7 +388,9 @@ class InsightSkill:
         is_new = ctx["is_new"]
 
         # 生成话题
-        topic, dimension = self._tg.get_next(user_id=profile.user_id)
+        next_topic = self._tg.get_next(user_id=profile.user_id)
+        topic = next_topic["topic"]
+        dimension = next_topic["dimension"]
         self._current_topic = topic
         self._current_dimension = dimension
 
@@ -480,7 +482,9 @@ class InsightSkill:
             report = _render_report(profile, round_count)
         else:
             # 获取下一个话题
-            topic, dimension = self._tg.get_next(user_id=user_id)
+            next_topic = self._tg.get_next(user_id=user_id)
+            topic = next_topic["topic"]
+            dimension = next_topic["dimension"]
             self._current_topic = topic
             self._current_dimension = dimension
 

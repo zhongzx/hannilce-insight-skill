@@ -10,6 +10,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -88,13 +89,29 @@ class Dimensions(BaseModel):
         j = "J" if self.JP > 0.5 else "P"
         return f"{e}{s}{t}{j}"
 
+    @property
+    def EI_letter(self) -> str:
+        return "E" if self.EI > 0.5 else "I"
+
+    @property
+    def SN_letter(self) -> str:
+        return "S" if self.SN > 0.5 else "N"
+
+    @property
+    def TF_letter(self) -> str:
+        return "T" if self.TF > 0.5 else "F"
+
+    @property
+    def JP_letter(self) -> str:
+        return "J" if self.JP > 0.5 else "P"
+
 
 class MBTIProfile(BaseModel):
     """用户 MBTI 画像"""
 
     user_id: str
     name: str
-    final_type: str | None = None
+    final_type: Optional[str] = None
     confidence: float = 0.0
     dimensions: Dimensions = Field(default_factory=Dimensions)
     created_at: str
@@ -165,7 +182,7 @@ class MBTIProfile(BaseModel):
 class ConversationLog(BaseModel):
     """单轮对话记录"""
 
-    id: int | None = None
+    id: Optional[int] = None
     user_id: str
     topic: str
     user_response: str
@@ -192,7 +209,7 @@ class ConversationLog(BaseModel):
 class QualityLog(BaseModel):
     """单轮质量评分记录"""
 
-    id: int | None = None
+    id: Optional[int] = None
     user_id: str
     token_score: float
     semantic_score: float
@@ -211,7 +228,7 @@ class QualityLog(BaseModel):
         )
 
     @property
-    def decline_from_prev(self) -> float | None:
+    def decline_from_prev(self) -> Optional[float]:
         """
         计算与前一轮的下降幅度（供滑动窗口使用）。
         本字段由 QualityController 在查询时计算，不存储。
@@ -227,12 +244,12 @@ class QualityLog(BaseModel):
 class TopicPool(BaseModel):
     """话题池条目"""
 
-    id: int | None = None
+    id: Optional[int] = None
     topic: str
     dimension: str  # E/I/S/N/T/F/J/P
     source: str  # builtin / news
     created_at: str
-    expires_at: str | None = None
+    expires_at: Optional[str] = None
 
     @classmethod
     def from_db_row(cls, row: dict) -> TopicPool:
@@ -282,7 +299,7 @@ class SlidingWindow(BaseModel):
             self.recent_scores.pop(0)
         self.last_updated = datetime.now(timezone.utc).isoformat()
 
-    def get_decline_delta(self) -> float | None:
+    def get_decline_delta(self) -> Optional[float]:
         """
         计算最近 window_size 轮的质量下降幅度。
 
@@ -293,7 +310,10 @@ class SlidingWindow(BaseModel):
         if len(self.recent_scores) < 3:
             return None
         mid = len(self.recent_scores) // 2
-        first_half = self.recent_scores[:mid] if mid > 0 else self.recent_scores[:1]
+        if mid > 0:
+            first_half = self.recent_scores[:mid]
+        else:
+            first_half = self.recent_scores[:1]
         second_half = self.recent_scores[mid:]
         avg_first = sum(first_half) / len(first_half)
         avg_second = sum(second_half) / len(second_half)

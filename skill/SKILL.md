@@ -1,10 +1,14 @@
 ---
 name: hannilce-insight
 label: 汉尼可儿读心术
-description: |
-  基于多轮话题对话的 MBTI 性格分析技能。通过动态生成的话题引导，结合新闻热点，
-  在对话中逐步解析用户的 EI / SN / TF / JP 四维偏好，最终输出 MBTI 性格报告。
-  触发方式：用户输入 `/MBTI 姓名` 即可开启分析。
+description: 基于多轮话题对话的 MBTI 性格分析技能。通过动态话题引导，在对话中解析 EI/SN/TF/JP 四维偏好，最终输出 MBTI 性格报告。触发方式：/MBTI
+triggers:
+  - /MBTI
+commands:
+  - name: /MBTI
+    description: 开始 MBTI 性格分析，用法：/MBTI <姓名>
+handler:
+  command: "cd ${SKILL_DIR} && PYTHONPATH=${SKILL_DIR} python mbti/insight_skill.py"
 ---
 
 # 汉尼可儿读心术（Hannilce Insight）

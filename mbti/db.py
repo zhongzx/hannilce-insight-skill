@@ -1,10 +1,13 @@
 """
 数据库层：SQLite WAL 模式初始化 + 表结构管理
 
-路径：/home/gem/.aily/workspace/mbti/sessions.db
+路径：~/.hermes/mbti/sessions.db
 模式：WAL（Write-Ahead Logging），支持并发读写
 """
 
+from __future__ import annotations
+
+import os
 import sqlite3
 from datetime import timezone
 from pathlib import Path
@@ -12,7 +15,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # 路径配置
 # ---------------------------------------------------------------------------
-DB_PATH = Path(__file__).parent / "sessions.db"
+DB_PATH = Path(os.path.expanduser("~/.hermes/mbti/sessions.db"))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -30,9 +34,12 @@ def get_connection(foreign_keys: bool = True) -> sqlite3.Connection:
     """
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute(
-        "PRAGMA foreign_keys = ON" if foreign_keys else "PRAGMA foreign_keys = OFF"
+    foreign_key_pragma = (
+        "PRAGMA foreign_keys = ON"
+        if foreign_keys
+        else "PRAGMA foreign_keys = OFF"
     )
+    conn.execute(foreign_key_pragma)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -55,7 +62,9 @@ def init_db() -> None:
             name           TEXT,               -- 用户姓名（原始）
             final_type     TEXT,               -- 最终推断的 MBTI 类型（如 INFP）
             confidence     REAL DEFAULT 0.0,   -- 置信度 0.0~1.0
-            dimensions     TEXT,               -- 四维打分 JSON {"EI":0.5,"SN":0.5,"TF":0.5,"JP":0.5}
+            dimensions     TEXT,               -- 四维打分 JSON
+                                            -- {"EI":0.5,"SN":0.5,
+                                            --  "TF":0.5,"JP":0.5}
             created_at     TEXT,
             updated_at     TEXT,
             archived       INTEGER DEFAULT 0   -- 0=活跃, 1=已封存
@@ -104,7 +113,8 @@ def init_db() -> None:
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sliding_window (
             user_id        TEXT PRIMARY KEY,
-            recent_scores  TEXT,               -- JSON 数组，存储最近 N 个 semantic_score
+            recent_scores  TEXT,               -- JSON 数组，存储最近 N 个
+                                            -- semantic_score
             window_size    INTEGER DEFAULT 5,
             last_updated   TEXT,
             FOREIGN KEY (user_id) REFERENCES mbti_profiles(user_id)
@@ -115,19 +125,24 @@ def init_db() -> None:
     # 索引
     # ---------------------------------------------------------------------------
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_profiles_archived ON mbti_profiles(archived)"
+        "CREATE INDEX IF NOT EXISTS idx_profiles_archived "
+        "ON mbti_profiles(archived)"
     )
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_logs_user_id ON conversation_logs(user_id)"
+        "CREATE INDEX IF NOT EXISTS idx_logs_user_id "
+        "ON conversation_logs(user_id)"
     )
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON conversation_logs(timestamp)"
+        "CREATE INDEX IF NOT EXISTS idx_logs_timestamp "
+        "ON conversation_logs(timestamp)"
     )
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_quality_user_id ON quality_logs(user_id)"
+        "CREATE INDEX IF NOT EXISTS idx_quality_user_id "
+        "ON quality_logs(user_id)"
     )
     cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_quality_timestamp ON quality_logs(timestamp)"
+        "CREATE INDEX IF NOT EXISTS idx_quality_timestamp "
+        "ON quality_logs(timestamp)"
     )
 
     conn.commit()
@@ -142,7 +157,10 @@ def init_db() -> None:
 def profile_exists(user_id: str) -> bool:
     """检查用户画像是否存在。"""
     conn = get_connection()
-    cursor = conn.execute("SELECT 1 FROM mbti_profiles WHERE user_id = ?", (user_id,))
+    cursor = conn.execute(
+        "SELECT 1 FROM mbti_profiles WHERE user_id = ?",
+        (user_id,),
+    )
     exists = cursor.fetchone() is not None
     conn.close()
     return exists
@@ -151,7 +169,10 @@ def profile_exists(user_id: str) -> bool:
 def get_profile(user_id: str) -> dict | None:
     """获取用户画像，不存在返回 None。"""
     conn = get_connection()
-    cursor = conn.execute("SELECT * FROM mbti_profiles WHERE user_id = ?", (user_id,))
+    cursor = conn.execute(
+        "SELECT * FROM mbti_profiles WHERE user_id = ?",
+        (user_id,),
+    )
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
@@ -165,7 +186,8 @@ def save_profile(user_id: str, name: str) -> None:
     conn = get_connection()
     conn.execute(
         """
-        INSERT OR IGNORE INTO mbti_profiles (user_id, name, dimensions, created_at, updated_at)
+        INSERT OR IGNORE INTO mbti_profiles
+            (user_id, name, dimensions, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
         """,
         (user_id, name, '{"EI":0.5,"SN":0.5,"TF":0.5,"JP":0.5}', now, now),
@@ -204,9 +226,8 @@ def update_profile(
     values.append(user_id)
 
     conn = get_connection()
-    conn.execute(
-        f"UPDATE mbti_profiles SET {', '.join(fields)} WHERE user_id = ?", values
-    )
+    query = f"UPDATE mbti_profiles SET {', '.join(fields)} WHERE user_id = ?"
+    conn.execute(query, values)
     conn.commit()
     conn.close()
 
@@ -221,7 +242,8 @@ def log_conversation(
     conn = get_connection()
     conn.execute(
         """
-        INSERT INTO conversation_logs (user_id, topic, user_response, dimension, timestamp)
+        INSERT INTO conversation_logs
+            (user_id, topic, user_response, dimension, timestamp)
         VALUES (?, ?, ?, ?, ?)
         """,
         (user_id, topic, user_response, dimension, now),
@@ -240,7 +262,8 @@ def log_quality(
     conn = get_connection()
     conn.execute(
         """
-        INSERT INTO quality_logs (user_id, token_score, semantic_score, confidence, timestamp)
+        INSERT INTO quality_logs
+            (user_id, token_score, semantic_score, confidence, timestamp)
         VALUES (?, ?, ?, ?, ?)
         """,
         (user_id, token_score, semantic_score, confidence, now),
@@ -294,7 +317,8 @@ def upsert_topic(
     conn = get_connection()
     conn.execute(
         """
-        INSERT OR REPLACE INTO topic_pool (topic, dimension, source, created_at, expires_at)
+        INSERT OR REPLACE INTO topic_pool
+            (topic, dimension, source, created_at, expires_at)
         VALUES (?, ?, ?, ?, ?)
         """,
         (topic, dimension, source, now, expires_at),

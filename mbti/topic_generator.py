@@ -137,7 +137,9 @@ class TopicGenerator:
         """
         if seed_path is None:
             seed_path = (
-                Path(__file__).parent.parent / "seed_data" / "scraped_topics.json"
+                Path(__file__).parent.parent
+                / "seed_data"
+                / "scraped_topics.json"
             )
         self.seed_path = Path(seed_path)
         self._seed_topics: list[dict] = self._load_seed()
@@ -152,7 +154,10 @@ class TopicGenerator:
             return []
 
         with open(self.seed_path, encoding="utf-8") as f:
-            raw = json.load(f)
+            try:
+                raw = json.load(f)
+            except json.JSONDecodeError:
+                return []
 
         # 兼容不同格式
         topics = raw if isinstance(raw, list) else raw.get("topics", [])
@@ -162,7 +167,10 @@ class TopicGenerator:
         # 写入话题池表（去重，由 db.upsert_topic 保证）
         for item in topics:
             topic_text = item.get("title") or item.get("topic", "")
-            dimension = item.get("dimension", random.choice(["EI", "SN", "TF", "JP"]))
+            dimension = item.get(
+                "dimension",
+                random.choice(["EI", "SN", "TF", "JP"]),
+            )
             source = "news"
             expires = item.get("expires_at") or self._default_expires()
             db.upsert_topic(topic_text, dimension, source, expires)
@@ -187,7 +195,10 @@ class TopicGenerator:
         """
         count = 0
         for item in _BUILTIN_TOPICS:
-            existing = db.get_valid_topics(dimension=item["dimension"], limit=100)
+            existing = db.get_valid_topics(
+                dimension=item["dimension"],
+                limit=100,
+            )
             if any(t["topic"] == item["topic"] for t in existing):
                 continue
             db.upsert_topic(
@@ -243,7 +254,10 @@ class TopicGenerator:
                 return self._format_topic(chosen)
 
         # 降级：内置话题
-        return self._get_builtin_fallback(dimension=dimension, asked=asked_topics)
+        return self._get_builtin_fallback(
+            dimension=dimension,
+            asked=asked_topics,
+        )
 
     def _get_db_topics(
         self,
@@ -274,7 +288,7 @@ class TopicGenerator:
         return {
             "topic": row["topic"],
             "dimension": row["dimension"],
-            "source": row["source"],
+            "source": row.get("source", "builtin"),
         }
 
     # -------------------------------------------------------------------------
@@ -313,23 +327,28 @@ class TopicGenerator:
             for log in history[-5:]:
                 dim = dim_map.get(log.get("dimension", ""), log["dimension"])
                 history_lines += (
-                    f"- [{dim}] {log['topic']}\n  用户: {log['user_response'][:60]}\n"
+                    f"- [{dim}] {log['topic']}\n"
+                    f"  用户: {log['user_response'][:60]}\n"
                 )
 
         # 计算最需要探索的维度（分值最接近 0.5 的，即最不确定）
         dim_scores = {k: abs(v - 0.5) for k, v in dimensions.items()}
         uncertain_dims = sorted(dim_scores, key=dim_scores.get)
 
-        target_line = (
-            f"（优先探索维度：{dim_map.get(target_dimension, random.choice(uncertain_dims))}）"
-            if target_dimension
-            else ""
-        )
+        if target_dimension:
+            target_dim = dim_map.get(
+                target_dimension,
+                random.choice(uncertain_dims),
+            )
+            target_line = f"（优先探索维度：{target_dim}）"
+        else:
+            target_line = ""
 
         return f"""你是一个 MBTI 话题设计专家。请为用户生成下一个分析话题。
 
 ## 用户当前画像
-- 四维打分：EI={dimensions.get("EI", 0.5):.0%} / SN={dimensions.get("SN", 0.5):.0%} / TF={dimensions.get("TF", 0.5):.0%} / JP={dimensions.get("JP", 0.5):.0%}
+- 四维打分：EI={dimensions.get("EI", 0.5):.0%} / SN={dimensions.get("SN", 0.5):.0%}
+  TF={dimensions.get("TF", 0.5):.0%} / JP={dimensions.get("JP", 0.5):.0%}
 - 最不确定维度：{dim_map.get(uncertain_dims[0], "EI")}（分值最接近50%，需要深入探索）
 
 ## 最近对话 {target_line}
