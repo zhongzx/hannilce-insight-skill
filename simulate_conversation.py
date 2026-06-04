@@ -174,7 +174,17 @@ def _choose_chat_answer(*, scenario: str, turn_index: int) -> str:
         return samples[turn_index % len(samples)]
 
     if scenario == "report":
-        return "/报告" if turn_index >= 2 else "最近挺忙的。"
+        if turn_index >= 6:
+            return "/报告"
+        samples = [
+            "最近挺忙的，但也还扛得住。",
+            "工作上有点挤压感，脑子停不下来。",
+            "我其实想把节奏放慢一点，但总有事推着走。",
+            "最近情绪有点钝，没啥大起伏。",
+            "我也说不上来具体怎么了，就是有点累。",
+            "如果能选，我更想先把手头最要紧的事收口。",
+        ]
+        return samples[turn_index % len(samples)]
 
     if scenario == "summary_deny":
         samples = [
