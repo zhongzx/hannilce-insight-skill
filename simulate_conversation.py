@@ -177,7 +177,14 @@ def _choose_chat_answer(*, scenario: str, turn_index: int) -> str:
         return "/报告" if turn_index >= 2 else "最近挺忙的。"
 
     if scenario == "summary_deny":
-        return "还好。"
+        samples = [
+            "还好。",
+            "一般吧。",
+            "就那样。",
+            "没啥特别的。",
+            "最近挺忙的。",
+        ]
+        return samples[turn_index % len(samples)]
 
     if scenario == "happy":
         samples = [
@@ -301,9 +308,15 @@ def _collect_quality_warnings(
 
 def run_simulation(cfg: SimulationConfig) -> int:
     _configure_openrouter(cfg.openrouter)
-    os.environ["MBTI_ENABLE_LLM_SIGNALS"] = "1" if cfg.enable_llm_signals else "0"
-    os.environ["MBTI_ENABLE_LLM_SEMANTIC"] = "1" if cfg.enable_llm_semantic else "0"
-    os.environ["MBTI_ENABLE_UNIFIED_TURN"] = "1" if cfg.enable_unified_llm else "0"
+    os.environ["MBTI_ENABLE_LLM_SIGNALS"] = (
+        "1" if cfg.enable_llm_signals else "0"
+    )
+    os.environ["MBTI_ENABLE_LLM_SEMANTIC"] = (
+        "1" if cfg.enable_llm_semantic else "0"
+    )
+    os.environ["MBTI_ENABLE_UNIFIED_TURN"] = (
+        "1" if cfg.enable_unified_llm else "0"
+    )
     _print_header(cfg)
     if cfg.openrouter == "on" and load_openrouter_settings() is None:
         print(
@@ -563,9 +576,8 @@ def summarize_jsonl(path: str) -> int:
     print(f"types={json.dumps(type_counts, ensure_ascii=False)}")
     print(f"sources={json.dumps(source_counts, ensure_ascii=False)}")
     topic_question_ratio = question_topic_count / max(1, topic_count)
-    print(
-        f"topic_question_ratio={topic_question_ratio:.4f} (topic_count={topic_count})"
-    )
+    print(f"topic_question_ratio={topic_question_ratio:.4f}")
+    print(f"topic_count={topic_count}")
     print(f"topic_repeats={repeat_topics}")
 
     def _print_latency(name: str, xs: list[int]) -> None:
@@ -635,7 +647,9 @@ def _parse_args() -> SimulationConfig:
         seed=int(args.seed) if args.seed is not None else None,
         trace_profile=bool(args.trace_profile),
         trace_metrics=bool(args.trace_metrics),
-        summarize_jsonl=(str(args.summarize_jsonl) if args.summarize_jsonl else None),
+        summarize_jsonl=(
+            str(args.summarize_jsonl) if args.summarize_jsonl else None
+        ),
         ci_mode=bool(args.ci),
     )
 
