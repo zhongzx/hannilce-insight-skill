@@ -1,7 +1,7 @@
 """
 数据库层：SQLite WAL 模式初始化 + 表结构管理
 
-路径：~/.hermes/mbti/sessions.db
+路径：默认 ~/.hermes/mbti/sessions.db，可通过环境变量 MBTI_DB_PATH 覆盖
 模式：WAL（Write-Ahead Logging），支持并发读写
 """
 
@@ -15,8 +15,18 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # 路径配置
 # ---------------------------------------------------------------------------
-DB_PATH = Path(os.path.expanduser("~/.hermes/mbti/sessions.db"))
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _get_db_path() -> str:
+    override = os.environ.get("MBTI_DB_PATH")
+    if override:
+        if override == ":memory:":
+            return override
+        path = Path(os.path.expanduser(override))
+    else:
+        path = Path(os.path.expanduser("~/.hermes/mbti/sessions.db"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 # ---------------------------------------------------------------------------
@@ -32,11 +42,11 @@ def get_connection(foreign_keys: bool = True) -> sqlite3.Connection:
     Returns:
         sqlite3.Connection 对象
     """
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(_get_db_path(), check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL")
-    foreign_key_pragma = (
-        "PRAGMA foreign_keys = ON" if foreign_keys else "PRAGMA foreign_keys = OFF"
-    )
+    foreign_key_pragma = "PRAGMA foreign_keys = ON"
+    if not foreign_keys:
+        foreign_key_pragma = "PRAGMA foreign_keys = OFF"
     conn.execute(foreign_key_pragma)
     conn.row_factory = sqlite3.Row
     return conn
@@ -426,4 +436,4 @@ def get_valid_topics(dimension: str = None, limit: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     init_db()
-    print(f"✅ 数据库初始化完成: {DB_PATH}")
+    print(f"✅ 数据库初始化完成: {_get_db_path()}")

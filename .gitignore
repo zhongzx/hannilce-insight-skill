@@ -54,3 +54,6 @@ secrets/
 # Temp
 tmp/
 temp/
+
+# Local artifacts
+artifacts/
