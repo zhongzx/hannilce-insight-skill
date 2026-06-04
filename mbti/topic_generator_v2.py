@@ -167,8 +167,8 @@ class TopicGeneratorV2:
             filtered = []
 
         pool = filtered or self._seed_categories
-        categories = list(dict.fromkeys(pool))
-        chosen = categories if len(categories) <= k else random.sample(categories, k=k)
+        cats = list(dict.fromkeys(pool))
+        chosen = cats if len(cats) <= k else random.sample(cats, k)
         return [f"{c} 相关热点" for c in chosen]
 
     def _preferred_category_keywords(
@@ -183,9 +183,10 @@ class TopicGeneratorV2:
 
         if occupation:
             lowered = occupation.lower()
+            tech_words = ("ai", "ml", "llm", "dev", "engineer")
             if any(
                 w in occupation for w in ("程序", "开发", "工程", "算法", "数据")
-            ) or any(w in lowered for w in ("ai", "ml", "llm", "dev", "engineer")):
+            ) or any(w in lowered for w in tech_words):
                 keywords |= {"科技", "AI", "数码", "3C", "前沿"}
             if any(w in occupation for w in ("金融", "投资", "证券", "会计", "财务")):
                 keywords |= {"股市", "商业", "财经"}
@@ -229,7 +230,7 @@ class TopicGeneratorV2:
         seed_snippets = self._select_seed_snippets(
             gender=gender,
             birth_yyyymm=birth_yyyymm,
-            occupation=occupation,
+            occupation=None,
             k=2,
         )
         seed_block = "\n".join(f"- {s}" for s in seed_snippets) or "（无）"
@@ -244,9 +245,9 @@ class TopicGeneratorV2:
         profile_lines = [
             f"性别：{gender}" if gender else None,
             f"出生年月：{birth_yyyymm}" if birth_yyyymm else None,
-            f"职业：{occupation}" if occupation else None,
         ]
-        profile_text = "\n".join([line for line in profile_lines if line]) or "（无）"
+        profile_text_lines = [line for line in profile_lines if line]
+        profile_text = "\n".join(profile_text_lines) or "（无）"
 
         strategy = {
             "open": "用一个非常开放的问题开始，让对方愿意多说一点。",
@@ -266,9 +267,13 @@ class TopicGeneratorV2:
             f"最近对话（避免重复）：\n{history_lines or '（无）'}\n\n"
             f"已问过话题（截断）：\n{asked_preview}\n\n"
             "要求：\n"
-            "1) 只输出一行中文问题，不要输出 JSON，不要解释\n"
-            "2) 问题必须开放式，鼓励用户讲具体经历/例子/感受\n"
-            "3) 避免与已问过话题重复\n"
+            "1) 只输出一行中文口语对话文本（<=30字），不要输出 JSON，不要解释\n"
+            "2) 允许：一句共情/复述（可选）+ 一个简短问题（可选），整行最多一个问号\n"
+            "3) 禁止采访腔：不要用“能否/请你/你能不能/讲述一次/如何看待/你是否”等\n"
+            "4) 除非对方主动提到，否则避免行业术语或职业细节\n"
+            "5) 避免与已问过话题重复\n"
+            "6) 不要夹英文或拼音\n"
+            "7) 不要输出空泛的“你好/请继续/好的”，必须给出一个可回答的具体点\n"
         )
         content = self._call_llm_topic_with_retry(
             settings=settings,
@@ -276,11 +281,15 @@ class TopicGeneratorV2:
             max_attempts=3,
         )
         if content:
-            candidate = content.strip().splitlines()[0].strip()
-            if candidate and not self._is_similar_to_any(
-                candidate,
-                asked_topics=asked_topics,
-                asked_topics_norm=asked_topics_norm,
+            candidate = self._sanitize_candidate(content)
+            if (
+                candidate
+                and self._is_actionable_prompt(candidate)
+                and not self._is_similar_to_any(
+                    candidate,
+                    asked_topics=asked_topics,
+                    asked_topics_norm=asked_topics_norm,
+                )
             ):
                 return candidate
 
@@ -291,8 +300,8 @@ class TopicGeneratorV2:
         )
         if not second:
             return None
-        candidate2 = second.strip().splitlines()[0].strip()
-        if not candidate2:
+        candidate2 = self._sanitize_candidate(second)
+        if not candidate2 or not self._is_actionable_prompt(candidate2):
             return None
         if self._is_similar_to_any(
             candidate2,
@@ -306,6 +315,24 @@ class TopicGeneratorV2:
         cleaned = text.strip().replace("您", "你")
         parts = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", cleaned)
         return "".join(parts).lower()
+
+    def _sanitize_candidate(self, text: str) -> str:
+        candidate = text.strip().splitlines()[0].strip()
+        return candidate.strip(" \"'“”‘’")
+
+    def _is_actionable_prompt(self, text: str) -> bool:
+        t = text.strip()
+        if not t:
+            return False
+        if len(t) > 36:
+            return False
+        if "MBTI" in t or "维度" in t:
+            return False
+        if "?" in t or "？" in t:
+            return True
+        if t.endswith(("吗", "呢", "呀", "么", "吧")):
+            return True
+        return any(key in t for key in ("说说", "聊聊", "讲讲", "展开", "具体", "细说"))
 
     def _is_similar_to_any(
         self,
@@ -338,7 +365,10 @@ class TopicGeneratorV2:
         max_attempts: int,
     ) -> str | None:
         messages = [
-            {"role": "system", "content": "你只输出一行问题文本。"},
+            {
+                "role": "system",
+                "content": "你只输出一行中文口语对话文本（不超过 30 字）。",
+            },
             {"role": "user", "content": prompt},
         ]
         for attempt in range(max_attempts):

@@ -117,11 +117,16 @@ class QualityController:
             semantic_score = llm_semantic_score
             semantic_source = "provided"
         else:
-            semantic_result = self._try_score_semantic_with_llm(
-                topic=topic,
-                user_response=user_response,
-                user_id=user_id,
-            )
+            semantic_result = None
+            if self._is_env_enabled(
+                "MBTI_ENABLE_LLM_SEMANTIC",
+                default=True,
+            ):
+                semantic_result = self._try_score_semantic_with_llm(
+                    topic=topic,
+                    user_response=user_response,
+                    user_id=user_id,
+                )
             if semantic_result is None:
                 semantic_score = self._score_semantic_fallback(
                     topic=topic,
@@ -171,6 +176,12 @@ class QualityController:
         if len(text) < 15:
             return {"EI": 0.0, "SN": 0.0, "TF": 0.0, "JP": 0.0}
 
+        if not self._is_env_enabled(
+            "MBTI_ENABLE_LLM_SIGNALS",
+            default=True,
+        ):
+            return self._analyze_dimension_signals_heuristic(user_response)
+
         settings = load_openrouter_settings()
         if settings:
             result = self._analyze_dimension_signals_with_llm(
@@ -184,6 +195,13 @@ class QualityController:
                 return result
 
         return self._analyze_dimension_signals_heuristic(user_response)
+
+    def _is_env_enabled(self, name: str, *, default: bool) -> bool:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        cleaned = raw.strip().lower()
+        return cleaned not in {"0", "false", "off", "no"}
 
     def _analyze_dimension_signals_with_llm(
         self,
@@ -493,9 +511,11 @@ class QualityController:
         if not current:
             return 0.0
 
-        max_similarity = max(
-            SequenceMatcher(None, current, prev).ratio() for prev in recent_answers
-        )
+        max_similarity = 0.0
+        for prev in recent_answers:
+            ratio = SequenceMatcher(None, current, prev).ratio()
+            if ratio > max_similarity:
+                max_similarity = ratio
         repetition_score = 1.0 - max_similarity
         repetition_score = max(0.0, min(1.0, repetition_score))
 

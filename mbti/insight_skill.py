@@ -31,6 +31,7 @@ from mbti.session_manager import SessionManager
 from mbti.topic_generator_v2 import TopicGeneratorV2
 from openrouter_client import (
     call_chat_completion,
+    extract_first_json_object,
     load_openrouter_settings,
 )
 
@@ -312,6 +313,9 @@ class InsightSkill:
         self._pending_birth_confirmation: str | None = None
         self._awaiting_summary_feedback: bool = False
         self._last_user_id: str | None = None
+        self._unified_fail_streak: int = 0
+        self._unified_last_error_code: str | None = None
+        self._unified_last_error_excerpt: str | None = None
 
     # -------------------------------------------------------------------------
     # 公共接口
@@ -351,6 +355,9 @@ class InsightSkill:
             }
         """
         self.init()
+        self._unified_fail_streak = 0
+        self._unified_last_error_code = None
+        self._unified_last_error_excerpt = None
 
         # 获取/创建会话
         ctx = self._sm.get_or_create(
@@ -500,12 +507,60 @@ class InsightSkill:
                     ).to_summary()
                 return handled
 
+        current_topic = self._current_topic or ""
+        can_attempt_unified = (
+            self._is_env_enabled("MBTI_ENABLE_UNIFIED_TURN", default=False)
+            and load_openrouter_settings() is not None
+            and bool(current_topic.strip())
+            and not self._is_report_request(user_response)
+        )
+        unified = None
+        if can_attempt_unified:
+            unified = self._try_unified_llm_turn(
+                user_id=user_id,
+                current_topic=current_topic,
+                user_response=user_response,
+            )
+            if unified is None:
+                self._unified_fail_streak += 1
+                if self._unified_fail_streak >= self._unified_max_failures():
+                    self._unified_fail_streak = 0
+                    archive_reason = (
+                        self._unified_last_error_code or "unified_llm_invalid_output"
+                    )
+                    result: dict[str, object] = {
+                        "type": "archive",
+                        "topic": None,
+                        "dimension": None,
+                        "topic_source": "openrouter_unified",
+                        "summary": None,
+                        "report": None,
+                        "message": (
+                            "我这边生成下一步时连续出现异常，为了不浪费你时间，"
+                            "我先暂停这次对话。你稍后再试一次，或重新发送 /MBTI "
+                            f"{user_name} 重新开始。"
+                        ),
+                        "should_archive": True,
+                        "archive_reason": archive_reason,
+                    }
+                    if debug_enabled:
+                        result["unified_error"] = {
+                            "code": archive_reason,
+                            "excerpt": self._unified_last_error_excerpt,
+                        }
+                    return result
+            else:
+                self._unified_fail_streak = 0
+        else:
+            self._unified_fail_streak = 0
+
         # 1. 质量评估
         quality_result = self._qc.evaluate_round(
             user_id=user_id,
-            topic=self._current_topic or "",
+            topic=current_topic,
             user_response=user_response,
             dimension=None,
+            llm_semantic_score=unified["semantic_score"] if unified else None,
         )
         token_score = quality_result["token_score"]
         semantic_score = quality_result["semantic_score"]
@@ -525,11 +580,14 @@ class InsightSkill:
             confidence=confidence,
         )
 
-        signals = self._qc.analyze_dimension_signals(
-            user_id=user_id,
-            topic=self._current_topic or "",
-            user_response=user_response,
-        )
+        if unified and unified["dimension_signals"] is not None:
+            signals = unified["dimension_signals"]
+        else:
+            signals = self._qc.analyze_dimension_signals(
+                user_id=user_id,
+                topic=self._current_topic or "",
+                user_response=user_response,
+            )
         evidence_strength = 0.6
         if isinstance(round_score, float):
             evidence_strength = 0.4 + 0.6 * max(0.0, min(1.0, round_score))
@@ -566,10 +624,15 @@ class InsightSkill:
                 self._awaiting_summary_feedback = True
                 result_type = "summary"
             else:
-                next_topic = self._tg.get_next(user_id=user_id)
-                topic = next_topic["topic"]
-                dimension = next_topic.get("dimension", "")
-                next_topic_source = next_topic.get("source")
+                if unified and unified["next_topic"] is not None:
+                    topic = unified["next_topic"]
+                    dimension = ""
+                    next_topic_source = "openrouter_unified"
+                else:
+                    next_topic = self._tg.get_next(user_id=user_id)
+                    topic = next_topic["topic"]
+                    dimension = next_topic.get("dimension", "")
+                    next_topic_source = next_topic.get("source")
                 self._current_topic = topic
                 self._current_dimension = None
                 result_type = "next_topic"
@@ -599,6 +662,162 @@ class InsightSkill:
             }
             result["dimension_signals"] = signals
         return result
+
+    def _is_env_enabled(self, name: str, *, default: bool) -> bool:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        cleaned = raw.strip().lower()
+        return cleaned not in {"0", "false", "off", "no"}
+
+    def _unified_max_failures(self) -> int:
+        raw = os.environ.get("MBTI_UNIFIED_MAX_FAILS")
+        if not raw:
+            return 3
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            return 3
+        return max(1, min(5, value))
+
+    def _set_unified_error(self, code: str, excerpt: str | None) -> None:
+        self._unified_last_error_code = code
+        if excerpt:
+            self._unified_last_error_excerpt = excerpt.strip()[:240]
+        else:
+            self._unified_last_error_excerpt = None
+
+    def _is_unified_next_topic_valid(self, text: str) -> bool:
+        t = text.strip()
+        if not t:
+            return False
+        if len(t) > 36:
+            return False
+        if "MBTI" in t or "维度" in t:
+            return False
+        if any(w in t for w in ("你好", "请继续", "好的", "明白了")):
+            return False
+        if t.count("?") + t.count("？") > 1:
+            return False
+        if re.search(r"[A-Za-z]", t):
+            return False
+        if "?" in t or "？" in t:
+            return True
+        if t.endswith(("吗", "呢", "呀", "么", "吧")):
+            return True
+        return bool(re.search(r"(说说|聊聊|讲讲|展开|具体|细说)", t))
+
+    def _try_unified_llm_turn(
+        self,
+        *,
+        user_id: str,
+        current_topic: str,
+        user_response: str,
+    ) -> dict[str, object] | None:
+        if not self._is_env_enabled("MBTI_ENABLE_UNIFIED_TURN", default=False):
+            return None
+        settings = load_openrouter_settings()
+        if not settings:
+            return None
+        if not current_topic.strip():
+            return None
+        if self._is_report_request(user_response):
+            return None
+
+        history = db.get_conversation_history(user_id, limit=12)
+        history_lines = "\n".join(
+            (
+                f"- Q: {item.get('topic', '')}\n"
+                f"  A: {str(item.get('user_response', ''))[:120]}"
+            )
+            for item in history[-6:]
+        )
+        prompt = (
+            "你将一次性输出 JSON，用于驱动下一轮对话与后台评估。\n\n"
+            "你必须只输出 JSON（不要解释、不要代码块）。\n\n"
+            "输出 schema：\n"
+            "{\n"
+            '  "next_topic": "一行中文口语对话推进（<=30字，最多1个问号）",\n'
+            '  "dimension_signals": {"EI":0.0,"SN":0.0,"TF":0.0,"JP":0.0},\n'
+            '  "semantic_score": 0.0\n'
+            "}\n\n"
+            "字段要求：\n"
+            "- next_topic：自然聊天口吻，可包含一句共情/复述 + 一个简短问题；不要采访腔；不要夹英文。\n"
+            "- dimension_signals：范围 -1.0~+1.0，0 表示无信号；只从文本可见表达提取。\n"
+            "- semantic_score：0.0~1.0，衡量本轮回答是否具体、真诚、连贯、并与问题相关。\n\n"
+            f"最近对话（供你避免重复）：\n{history_lines or '（无）'}\n\n"
+            f"本轮问题：{current_topic}\n\n"
+            f"用户回答：{user_response}\n"
+        )
+        content = call_chat_completion(
+            settings=settings,
+            messages=[
+                {"role": "system", "content": "你只输出严格 JSON。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+        if not content:
+            self._set_unified_error("unified_no_content", None)
+            return None
+        obj = extract_first_json_object(content)
+        if not isinstance(obj, dict):
+            self._set_unified_error("unified_json_parse_failed", content)
+            return None
+
+        next_topic_raw = obj.get("next_topic")
+        next_topic = None
+        if isinstance(next_topic_raw, str):
+            cleaned = next_topic_raw.strip().splitlines()[0].strip()
+            cleaned = cleaned.strip(" \"'“”‘’")
+            if cleaned and self._is_unified_next_topic_valid(cleaned):
+                next_topic = cleaned
+        if next_topic is None:
+            raw_excerpt = (
+                next_topic_raw.strip()[:240]
+                if isinstance(next_topic_raw, str)
+                else None
+            )
+            self._set_unified_error("unified_next_topic_invalid", raw_excerpt)
+            return None
+
+        semantic_raw = obj.get("semantic_score")
+        semantic_score = None
+        if isinstance(semantic_raw, (int, float)):
+            semantic_score = float(semantic_raw)
+        elif isinstance(semantic_raw, str):
+            try:
+                semantic_score = float(semantic_raw.strip())
+            except ValueError:
+                semantic_score = None
+        if semantic_score is not None:
+            semantic_score = max(0.0, min(1.0, semantic_score))
+
+        sig_raw = obj.get("dimension_signals")
+        dim_signals = None
+        if isinstance(sig_raw, dict):
+            parsed: dict[str, float] = {}
+            for key in ("EI", "SN", "TF", "JP"):
+                v = sig_raw.get(key)
+                if isinstance(v, (int, float)):
+                    value = float(v)
+                elif isinstance(v, str):
+                    try:
+                        value = float(v.strip())
+                    except ValueError:
+                        value = 0.0
+                else:
+                    value = 0.0
+                parsed[key] = max(-1.0, min(1.0, value))
+            dim_signals = parsed
+
+        self._set_unified_error("unified_ok", None)
+
+        return {
+            "next_topic": next_topic,
+            "semantic_score": semantic_score,
+            "dimension_signals": dim_signals,
+        }
 
     def _is_report_request(self, text: str) -> bool:
         cleaned = text.strip()
@@ -649,9 +868,15 @@ class InsightSkill:
         is_deny = bool(re.search(r"(不对|不太对|偏了|不是|相反|不准|误会)", text))
 
         if is_affirm:
-            profile = self._sm.nudge_dimension_confidences(user_id=user_id, delta=0.05)
+            profile = self._sm.nudge_dimension_confidences(
+                user_id=user_id,
+                delta=0.05,
+            )
         elif is_deny:
-            profile = self._sm.nudge_dimension_confidences(user_id=user_id, delta=-0.05)
+            profile = self._sm.nudge_dimension_confidences(
+                user_id=user_id,
+                delta=-0.05,
+            )
 
         signals = self._qc.analyze_dimension_signals(
             user_id=user_id,
@@ -1147,7 +1372,8 @@ class InsightSkill:
             f"出生年月：{profile.birth_yyyymm}" if profile.birth_yyyymm else None,
             f"职业：{profile.occupation}" if profile.occupation else None,
         ]
-        profile_text = "\n".join([line for line in profile_lines if line]) or "（无）"
+        profile_text_lines = [line for line in profile_lines if line]
+        profile_text = "\n".join(profile_text_lines) or "（无）"
 
         if settings:
             prompt = (
