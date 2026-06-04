@@ -95,11 +95,40 @@ def call_chat_completion(
                     f"elapsed_ms={elapsed_ms}",
                     file=sys.stderr,
                 )
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+    except urllib.error.HTTPError as e:
+        if debug_enabled:
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            body_excerpt = ""
+            try:
+                raw_body = e.read(512)
+                body_excerpt = raw_body.decode("utf-8", errors="replace").strip()
+            except OSError:
+                body_excerpt = ""
+            if body_excerpt:
+                body_excerpt = body_excerpt.replace("\n", " ")[:200]
+            print(
+                f"[OPENROUTER] failed model={settings.model} "
+                f"status={getattr(e, 'code', 'unknown')} "
+                f"elapsed_ms={elapsed_ms}"
+                f"{' body=' + body_excerpt if body_excerpt else ''}",
+                file=sys.stderr,
+            )
+        return None
+    except urllib.error.URLError as e:
         if debug_enabled:
             elapsed_ms = int((time.monotonic() - start_time) * 1000)
             print(
-                f"[OPENROUTER] failed model={settings.model} elapsed_ms={elapsed_ms}",
+                f"[OPENROUTER] failed model={settings.model} "
+                f"error=URLError reason={e.reason} elapsed_ms={elapsed_ms}",
+                file=sys.stderr,
+            )
+        return None
+    except TimeoutError:
+        if debug_enabled:
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            print(
+                f"[OPENROUTER] failed model={settings.model} "
+                f"error=timeout elapsed_ms={elapsed_ms}",
                 file=sys.stderr,
             )
         return None

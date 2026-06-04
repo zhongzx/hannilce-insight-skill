@@ -149,7 +149,11 @@ _DIMENSION_INFO = {
 }
 
 
-def _fallback_report_sections(profile: MBTIProfile) -> dict[str, str]:
+def _fallback_report_sections(
+    profile: MBTIProfile,
+    *,
+    openrouter_hint: str,
+) -> dict[str, str]:
     dims = profile.dimensions
     traits: list[str] = []
     if dims.EI < 0.45:
@@ -171,15 +175,11 @@ def _fallback_report_sections(profile: MBTIProfile) -> dict[str, str]:
 
     character_traits = "\n".join(traits) if traits else "- 信息不足，需要更多对话线索"
     return {
-        "type_fullname": "（简版）",
+        "type_fullname": "简版",
         "character_traits": character_traits,
-        "career_tendencies": ("- 如需更详细内容，请开启 OpenRouter 或继续对话补充线索"),
-        "relationship_style": (
-            "- 如需更详细内容，请开启 OpenRouter 或继续对话补充线索"
-        ),
-        "growth_suggestions": (
-            "- 如需更详细内容，请开启 OpenRouter 或继续对话补充线索"
-        ),
+        "career_tendencies": openrouter_hint,
+        "relationship_style": openrouter_hint,
+        "growth_suggestions": openrouter_hint,
     }
 
 
@@ -226,8 +226,18 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
         )
         if content:
             return content
+        openrouter_hint = (
+            "- OpenRouter 调用失败，已回退为简版报告；如需更详细内容，请检查 "
+            "OPENROUTER_API_KEY/OPENROUTER_MODEL、网络连通性或额度后重试，"
+            "或继续对话补充线索"
+        )
+    else:
+        openrouter_hint = (
+            "- 如需更详细内容，请设置 OPENROUTER_API_KEY/OPENROUTER_MODEL，"
+            "或继续对话补充线索"
+        )
 
-    sections = _fallback_report_sections(profile)
+    sections = _fallback_report_sections(profile, openrouter_hint=openrouter_hint)
 
     def dim_info(dim_name: str, letter: str) -> tuple[str, str, str]:
         info = _DIMENSION_INFO.get(dim_name, {}).get(letter, {})
