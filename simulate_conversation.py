@@ -25,16 +25,30 @@ class SimulationConfig:
     session_id: str
     max_turns: int
     openrouter: str
+    enable_llm_signals: bool
+    enable_llm_semantic: bool
+    enable_unified_llm: bool
     jsonl_out: str | None
     quality_check: bool
     random_profile: bool
     seed: int | None
     trace_profile: bool
     trace_metrics: bool
+    summarize_jsonl: str | None
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _ensure_writable_db_path() -> str:
+    existing = os.environ.get("MBTI_DB_PATH")
+    if existing:
+        return existing
+    path = Path.cwd() / "artifacts" / "sim" / "db" / "sessions.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["MBTI_DB_PATH"] = str(path)
+    return str(path)
 
 
 def _configure_openrouter(mode: str) -> None:
@@ -50,6 +64,7 @@ def _print_header(cfg: SimulationConfig) -> None:
     print("V0.3 对话回放模拟器")
     print(f"scenario={cfg.scenario} user={cfg.user_name}")
     print(f"session={cfg.session_id}")
+    print(f"db={os.environ.get('MBTI_DB_PATH')}")
     print(
         f"max_turns={cfg.max_turns} openrouter={cfg.openrouter} "
         f"quality_check={'on' if cfg.quality_check else 'off'} "
@@ -285,6 +300,9 @@ def _collect_quality_warnings(
 
 def run_simulation(cfg: SimulationConfig) -> int:
     _configure_openrouter(cfg.openrouter)
+    os.environ["MBTI_ENABLE_LLM_SIGNALS"] = "1" if cfg.enable_llm_signals else "0"
+    os.environ["MBTI_ENABLE_LLM_SEMANTIC"] = "1" if cfg.enable_llm_semantic else "0"
+    os.environ["MBTI_ENABLE_UNIFIED_TURN"] = "1" if cfg.enable_unified_llm else "0"
     _print_header(cfg)
     if cfg.openrouter == "on" and load_openrouter_settings() is None:
         print(
@@ -425,8 +443,132 @@ def run_simulation(cfg: SimulationConfig) -> int:
     return 0
 
 
+def _percentile(values: list[int], p: float) -> int | None:
+    if not values:
+        return None
+    xs = sorted(values)
+    k = (len(xs) - 1) * p
+    f = int(k)
+    c = min(len(xs) - 1, f + 1)
+    if f == c:
+        return xs[f]
+    lower = xs[f] * (c - k)
+    upper = xs[c] * (k - f)
+    return int(round(lower + upper))
+
+
+def summarize_jsonl(path: str) -> int:
+    p = Path(path)
+    if not p.exists():
+        print("[error]".ljust(12), f"找不到文件：{path}", file=sys.stderr)
+        return 2
+
+    runs = 0
+    assistant_messages = 0
+    assistant_with_elapsed = 0
+    user_messages = 0
+
+    type_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
+
+    elapsed_all: list[int] = []
+    elapsed_openrouter: list[int] = []
+    elapsed_collect_profile: list[int] = []
+
+    topic_count = 0
+    question_topic_count = 0
+    repeat_topics = 0
+    previous_topic: str | None = None
+
+    with p.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            role = obj.get("role")
+            if role == "user":
+                user_messages += 1
+                continue
+            if role != "assistant":
+                continue
+
+            assistant_messages += 1
+            payload = obj.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+
+            if payload.get("is_new") is True:
+                runs += 1
+
+            rtype = str(payload.get("type") or "")
+            type_counts[rtype] = type_counts.get(rtype, 0) + 1
+
+            source = str(payload.get("topic_source") or "")
+            if source:
+                source_counts[source] = source_counts.get(source, 0) + 1
+
+            elapsed_ms = obj.get("elapsed_ms")
+            if isinstance(elapsed_ms, int):
+                assistant_with_elapsed += 1
+                elapsed_all.append(elapsed_ms)
+                if source.startswith("collect_profile"):
+                    elapsed_collect_profile.append(elapsed_ms)
+                elif source == "openrouter":
+                    elapsed_openrouter.append(elapsed_ms)
+
+            topic = payload.get("topic")
+            if isinstance(topic, str) and topic.strip():
+                t = topic.strip()
+                topic_count += 1
+                if "?" in t or "？" in t:
+                    question_topic_count += 1
+                if previous_topic is not None and t == previous_topic:
+                    repeat_topics += 1
+                previous_topic = t
+
+    print("=" * 72)
+    print("JSONL 汇总")
+    print(f"path={path}")
+    print(f"runs={runs}")
+    print(
+        f"assistant_messages={assistant_messages} "
+        f"(with_elapsed={assistant_with_elapsed})"
+    )
+    print(f"user_messages={user_messages}")
+    print(f"types={json.dumps(type_counts, ensure_ascii=False)}")
+    print(f"sources={json.dumps(source_counts, ensure_ascii=False)}")
+    topic_question_ratio = question_topic_count / max(1, topic_count)
+    print(
+        f"topic_question_ratio={topic_question_ratio:.4f} (topic_count={topic_count})"
+    )
+    print(f"topic_repeats={repeat_topics}")
+
+    def _print_latency(name: str, xs: list[int]) -> None:
+        if not xs:
+            print(f"{name}: count=0")
+            return
+        avg = int(round(sum(xs) / len(xs)))
+        print(
+            f"{name}: count={len(xs)} avg_ms={avg} "
+            f"p50={_percentile(xs, 0.5)} p90={_percentile(xs, 0.9)} "
+            f"p99={_percentile(xs, 0.99)} max={max(xs)}"
+        )
+
+    _print_latency("elapsed_openrouter", elapsed_openrouter)
+    _print_latency("elapsed_collect_profile", elapsed_collect_profile)
+    _print_latency("elapsed_all", elapsed_all)
+    print("=" * 72)
+    return 0
+
+
 def _parse_args() -> SimulationConfig:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--summarize-jsonl", default=None)
     parser.add_argument(
         "--scenario",
         default="happy",
@@ -446,6 +588,9 @@ def _parse_args() -> SimulationConfig:
     parser.add_argument("--session-id", default=_now_iso())
     parser.add_argument("--max-turns", type=int, default=18)
     parser.add_argument("--openrouter", choices=["on", "off"], default="off")
+    parser.add_argument("--llm-signals", choices=["on", "off"], default="on")
+    parser.add_argument("--llm-semantic", choices=["on", "off"], default="on")
+    parser.add_argument("--unified-llm", choices=["on", "off"], default="off")
     parser.add_argument("--jsonl-out", default=None)
     parser.add_argument("--quality-check", action="store_true")
     parser.add_argument("--random-profile", action="store_true")
@@ -460,17 +605,24 @@ def _parse_args() -> SimulationConfig:
         session_id=str(args.session_id),
         max_turns=int(args.max_turns),
         openrouter=str(args.openrouter),
+        enable_llm_signals=str(args.llm_signals) == "on",
+        enable_llm_semantic=str(args.llm_semantic) == "on",
+        enable_unified_llm=str(args.unified_llm) == "on",
         jsonl_out=str(args.jsonl_out) if args.jsonl_out else None,
         quality_check=bool(args.quality_check),
         random_profile=bool(args.random_profile),
         seed=int(args.seed) if args.seed is not None else None,
         trace_profile=bool(args.trace_profile),
         trace_metrics=bool(args.trace_metrics),
+        summarize_jsonl=(str(args.summarize_jsonl) if args.summarize_jsonl else None),
     )
 
 
 def main() -> int:
     cfg = _parse_args()
+    _ensure_writable_db_path()
+    if cfg.summarize_jsonl:
+        return summarize_jsonl(cfg.summarize_jsonl)
     if cfg.scenario != "all":
         return run_simulation(cfg)
 
@@ -492,12 +644,16 @@ def main() -> int:
             session_id=_now_iso(),
             max_turns=cfg.max_turns,
             openrouter=cfg.openrouter,
+            enable_llm_signals=cfg.enable_llm_signals,
+            enable_llm_semantic=cfg.enable_llm_semantic,
+            enable_unified_llm=cfg.enable_unified_llm,
             jsonl_out=cfg.jsonl_out,
             quality_check=cfg.quality_check,
             random_profile=cfg.random_profile,
             seed=cfg.seed,
             trace_profile=cfg.trace_profile,
             trace_metrics=cfg.trace_metrics,
+            summarize_jsonl=None,
         )
         code = run_simulation(per_cfg)
         exit_code = exit_code or code
