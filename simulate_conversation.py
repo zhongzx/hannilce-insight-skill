@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from mbti.insight_skill import InsightSkill
+from openrouter_client import load_openrouter_settings
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,7 @@ class SimulationConfig:
     max_turns: int
     openrouter: str
     jsonl_out: str | None
+    quality_check: bool
 
 
 def _now_iso() -> str:
@@ -39,7 +42,10 @@ def _print_header(cfg: SimulationConfig) -> None:
     print("V0.3 对话回放模拟器")
     print(f"scenario={cfg.scenario} user={cfg.user_name}")
     print(f"session={cfg.session_id}")
-    print(f"max_turns={cfg.max_turns} openrouter={cfg.openrouter}")
+    print(
+        f"max_turns={cfg.max_turns} openrouter={cfg.openrouter} "
+        f"quality_check={'on' if cfg.quality_check else 'off'}"
+    )
     print("=" * 72)
 
 
@@ -165,14 +171,56 @@ def _log_jsonl(path: str | None, obj: dict[str, Any]) -> None:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
+def _collect_quality_warnings(
+    *,
+    assistant_text: str,
+    result: dict[str, Any],
+    previous_assistant_text: str | None,
+) -> list[str]:
+    warnings: list[str] = []
+    cleaned = assistant_text.strip()
+    if not cleaned:
+        warnings.append("assistant 输出为空")
+        return warnings
+
+    rtype = str(result.get("type") or "")
+    if rtype == "report":
+        return warnings
+
+    if "MBTI" in cleaned or "维度" in cleaned:
+        warnings.append("assistant 文本出现 MBTI/维度字样")
+
+    if re.search(r"你倾向于.+还是.+", cleaned):
+        warnings.append("出现二选一问法：你倾向于 A 还是 B")
+    if re.search(r"\bA\b.{0,10}\bB\b", cleaned) and "还是" in cleaned:
+        warnings.append("疑似二选一/量表问法")
+
+    if rtype == "summary" and not re.search(r"(你觉得呢|对吗|偏了|理解偏)", cleaned):
+        warnings.append("summary 缺少邀请纠正/反馈的收尾")
+
+    is_repeated = (
+        previous_assistant_text is not None
+        and cleaned == previous_assistant_text.strip()
+    )
+    if is_repeated:
+        warnings.append("assistant 连续重复同一句话")
+
+    return warnings
+
+
 def run_simulation(cfg: SimulationConfig) -> int:
     _configure_openrouter(cfg.openrouter)
     _print_header(cfg)
+    if cfg.openrouter == "on" and load_openrouter_settings() is None:
+        print(
+            "[warn]".ljust(12),
+            "openrouter=on 但未检测到可用配置，将自动回退为无模型模式。",
+        )
 
     skill = InsightSkill()
     result = skill.handle_trigger(cfg.user_name, cfg.session_id)
-
-    print("[assistant]".ljust(12), _render_assistant(result))
+    assistant_text = _render_assistant(result)
+    print("[assistant]".ljust(12), assistant_text)
     _log_jsonl(
         cfg.jsonl_out,
         {
@@ -183,6 +231,10 @@ def run_simulation(cfg: SimulationConfig) -> int:
     )
 
     chat_turn_index = 0
+    previous_assistant_text: str | None = None
+    assistant_question_count = 0
+    assistant_total_count = 0
+    warning_counts: dict[str, int] = {}
     outlier_birth_used = False
 
     for i in range(cfg.max_turns):
@@ -240,8 +292,23 @@ def run_simulation(cfg: SimulationConfig) -> int:
         )
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
-        print("[assistant]".ljust(12), _render_assistant(result))
+        assistant_text = _render_assistant(result)
+        print("[assistant]".ljust(12), assistant_text)
         print("[elapsed_ms]".ljust(12), elapsed_ms)
+
+        if cfg.quality_check:
+            assistant_total_count += 1
+            if "？" in assistant_text or "?" in assistant_text:
+                assistant_question_count += 1
+            warnings = _collect_quality_warnings(
+                assistant_text=assistant_text,
+                result=result,
+                previous_assistant_text=previous_assistant_text,
+            )
+            for w in warnings:
+                warning_counts[w] = warning_counts.get(w, 0) + 1
+                print("[quality]".ljust(12), w)
+            previous_assistant_text = assistant_text
 
         _log_jsonl(
             cfg.jsonl_out,
@@ -253,6 +320,19 @@ def run_simulation(cfg: SimulationConfig) -> int:
             },
         )
 
+    if cfg.quality_check and assistant_total_count > 0:
+        ratio = assistant_question_count / assistant_total_count
+        print("=" * 72)
+        print("[quality]".ljust(12), f"assistant 问句占比={ratio:.2f}")
+        if ratio > 0.9:
+            print("[quality]".ljust(12), "问句占比偏高，可能像采访而非朋友聊天")
+        if warning_counts:
+            print("[quality]".ljust(12), "告警汇总：")
+            for key in sorted(warning_counts.keys()):
+                print("[quality]".ljust(12), f"{warning_counts[key]}x {key}")
+        else:
+            print("[quality]".ljust(12), "未发现规则层面的明显告警")
+
     print("[done]".ljust(12), "达到最大轮次，结束回放。")
     return 0
 
@@ -263,6 +343,7 @@ def _parse_args() -> SimulationConfig:
         "--scenario",
         default="happy",
         choices=[
+            "all",
             "happy",
             "uncooperative",
             "outlier_birth",
@@ -277,6 +358,7 @@ def _parse_args() -> SimulationConfig:
     parser.add_argument("--max-turns", type=int, default=18)
     parser.add_argument("--openrouter", choices=["on", "off"], default="off")
     parser.add_argument("--jsonl-out", default=None)
+    parser.add_argument("--quality-check", action="store_true")
     args = parser.parse_args()
 
     return SimulationConfig(
@@ -286,12 +368,38 @@ def _parse_args() -> SimulationConfig:
         max_turns=int(args.max_turns),
         openrouter=str(args.openrouter),
         jsonl_out=str(args.jsonl_out) if args.jsonl_out else None,
+        quality_check=bool(args.quality_check),
     )
 
 
 def main() -> int:
     cfg = _parse_args()
-    return run_simulation(cfg)
+    if cfg.scenario != "all":
+        return run_simulation(cfg)
+
+    scenarios = [
+        "happy",
+        "uncooperative",
+        "outlier_birth",
+        "summary_confirm",
+        "summary_deny",
+        "report",
+        "nonsense",
+    ]
+    exit_code = 0
+    for s in scenarios:
+        per_cfg = SimulationConfig(
+            scenario=s,
+            user_name=cfg.user_name,
+            session_id=_now_iso(),
+            max_turns=cfg.max_turns,
+            openrouter=cfg.openrouter,
+            jsonl_out=cfg.jsonl_out,
+            quality_check=cfg.quality_check,
+        )
+        code = run_simulation(per_cfg)
+        exit_code = exit_code or code
+    return exit_code
 
 
 if __name__ == "__main__":
