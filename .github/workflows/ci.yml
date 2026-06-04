@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, "pr/**"]
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
