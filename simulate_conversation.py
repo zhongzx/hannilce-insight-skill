@@ -308,15 +308,9 @@ def _collect_quality_warnings(
 
 def run_simulation(cfg: SimulationConfig) -> int:
     _configure_openrouter(cfg.openrouter)
-    os.environ["MBTI_ENABLE_LLM_SIGNALS"] = (
-        "1" if cfg.enable_llm_signals else "0"
-    )
-    os.environ["MBTI_ENABLE_LLM_SEMANTIC"] = (
-        "1" if cfg.enable_llm_semantic else "0"
-    )
-    os.environ["MBTI_ENABLE_UNIFIED_TURN"] = (
-        "1" if cfg.enable_unified_llm else "0"
-    )
+    os.environ["MBTI_ENABLE_LLM_SIGNALS"] = "1" if cfg.enable_llm_signals else "0"
+    os.environ["MBTI_ENABLE_LLM_SEMANTIC"] = "1" if cfg.enable_llm_semantic else "0"
+    os.environ["MBTI_ENABLE_UNIFIED_TURN"] = "1" if cfg.enable_unified_llm else "0"
     _print_header(cfg)
     if cfg.openrouter == "on" and load_openrouter_settings() is None:
         print(
@@ -647,9 +641,7 @@ def _parse_args() -> SimulationConfig:
         seed=int(args.seed) if args.seed is not None else None,
         trace_profile=bool(args.trace_profile),
         trace_metrics=bool(args.trace_metrics),
-        summarize_jsonl=(
-            str(args.summarize_jsonl) if args.summarize_jsonl else None
-        ),
+        summarize_jsonl=(str(args.summarize_jsonl) if args.summarize_jsonl else None),
         ci_mode=bool(args.ci),
     )
 
