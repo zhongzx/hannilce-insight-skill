@@ -35,6 +35,7 @@ class SimulationConfig:
     trace_profile: bool
     trace_metrics: bool
     summarize_jsonl: str | None
+    ci_mode: bool
 
 
 def _now_iso() -> str:
@@ -331,11 +332,21 @@ def run_simulation(cfg: SimulationConfig) -> int:
     assistant_total_count = 0
     warning_counts: dict[str, int] = {}
     outlier_birth_used = False
+    fatal_warnings = {
+        "assistant 输出为空",
+        "assistant 文本出现 MBTI/维度字样",
+        "summary 缺少邀请纠正/反馈的收尾",
+    }
+    had_fatal_issue = False
 
     for i in range(cfg.max_turns):
         rtype = str(result.get("type") or "")
         topic_source = str(result.get("topic_source") or "")
         assistant_text = _render_assistant(result)
+
+        if cfg.ci_mode and rtype == "error":
+            print("[ci]".ljust(12), "出现 error 类型输出，判定失败。", file=sys.stderr)
+            return 1
 
         if rtype == "report":
             print("[done]".ljust(12), "已生成报告，结束回放。")
@@ -414,6 +425,8 @@ def run_simulation(cfg: SimulationConfig) -> int:
             for w in warnings:
                 warning_counts[w] = warning_counts.get(w, 0) + 1
                 print("[quality]".ljust(12), w)
+                if cfg.ci_mode and w in fatal_warnings:
+                    had_fatal_issue = True
             previous_assistant_text = assistant_text
 
         _log_jsonl(
@@ -440,6 +453,13 @@ def run_simulation(cfg: SimulationConfig) -> int:
             print("[quality]".ljust(12), "未发现规则层面的明显告警")
 
     print("[done]".ljust(12), "达到最大轮次，结束回放。")
+    if cfg.ci_mode and had_fatal_issue:
+        print(
+            "[ci]".ljust(12),
+            "出现致命告警（空输出/泄露内部词/summary 结构不合格），判定失败。",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -597,6 +617,7 @@ def _parse_args() -> SimulationConfig:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--trace-profile", action="store_true")
     parser.add_argument("--trace-metrics", action="store_true")
+    parser.add_argument("--ci", action="store_true")
     args = parser.parse_args()
 
     return SimulationConfig(
@@ -615,6 +636,7 @@ def _parse_args() -> SimulationConfig:
         trace_profile=bool(args.trace_profile),
         trace_metrics=bool(args.trace_metrics),
         summarize_jsonl=(str(args.summarize_jsonl) if args.summarize_jsonl else None),
+        ci_mode=bool(args.ci),
     )
 
 
@@ -654,6 +676,7 @@ def main() -> int:
             trace_profile=cfg.trace_profile,
             trace_metrics=cfg.trace_metrics,
             summarize_jsonl=None,
+            ci_mode=cfg.ci_mode,
         )
         code = run_simulation(per_cfg)
         exit_code = exit_code or code
