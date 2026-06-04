@@ -139,6 +139,17 @@ def _choose_chat_answer(*, scenario: str, turn_index: int) -> str:
     if scenario == "nonsense":
         return "asdfqwer"
 
+    if scenario == "breeze":
+        samples = [
+            "最近还行，有点忙但能扛住。",
+            "嗯，有点上头，也有点累。",
+            "我一般先把要紧的事处理掉，别的先放放。",
+            "说不上来，就是有点被推着走。",
+            "如果能选，我更想把节奏放慢一点。",
+            "其实也有开心的地方，只是没太顾得上感受。",
+        ]
+        return samples[turn_index % len(samples)]
+
     if scenario == "report":
         return "/报告" if turn_index >= 2 else "最近挺忙的。"
 
@@ -366,6 +377,7 @@ def _parse_args() -> SimulationConfig:
         choices=[
             "all",
             "happy",
+            "breeze",
             "uncooperative",
             "outlier_birth",
             "summary_deny",
@@ -404,6 +416,7 @@ def main() -> int:
 
     scenarios = [
         "happy",
+        "breeze",
         "uncooperative",
         "outlier_birth",
         "summary_confirm",
