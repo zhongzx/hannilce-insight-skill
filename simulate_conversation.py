@@ -5,13 +5,16 @@ import json
 import os
 import random
 import re
+import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mbti import db
 from mbti.insight_skill import InsightSkill
+from mbti.models import MBTIProfile, make_user_id
 from openrouter_client import load_openrouter_settings
 
 
@@ -26,6 +29,8 @@ class SimulationConfig:
     quality_check: bool
     random_profile: bool
     seed: int | None
+    trace_profile: bool
+    trace_metrics: bool
 
 
 def _now_iso() -> str:
@@ -47,7 +52,9 @@ def _print_header(cfg: SimulationConfig) -> None:
     print(f"session={cfg.session_id}")
     print(
         f"max_turns={cfg.max_turns} openrouter={cfg.openrouter} "
-        f"quality_check={'on' if cfg.quality_check else 'off'}"
+        f"quality_check={'on' if cfg.quality_check else 'off'} "
+        f"trace_profile={'on' if cfg.trace_profile else 'off'} "
+        f"trace_metrics={'on' if cfg.trace_metrics else 'off'}"
     )
     print("=" * 72)
 
@@ -97,8 +104,8 @@ def _choose_profile_answer(
             age_years = rng.randint(18, 45)
             year = max(1850, now.year - age_years)
             month = rng.randint(1, 12)
-            if year == now.year and month > now.month:
-                month = max(1, now.month)
+            if year == now.year - 18 and month > now.month:
+                month = now.month
             return f"{year:04d}{month:02d}"
         if scenario == "happy":
             return "199803"
@@ -199,6 +206,46 @@ def _log_jsonl(path: str | None, obj: dict[str, Any]) -> None:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
+def _estimate_tokens(text: str) -> int:
+    cleaned = text.strip()
+    if not cleaned:
+        return 0
+    return max(1, int(len(cleaned) / 4))
+
+
+def _print_profile_trace(*, user_id: str) -> None:
+    row = db.get_profile(user_id)
+    if not row:
+        return
+    profile = MBTIProfile.from_db_row(row)
+    summary = profile.to_summary()
+    print(
+        "[profile]".ljust(12),
+        json.dumps(summary, ensure_ascii=False),
+        file=sys.stderr,
+    )
+
+
+def _print_metrics_trace(
+    *,
+    user_text: str,
+    assistant_text: str,
+    elapsed_ms: int,
+) -> None:
+    metrics = {
+        "elapsed_ms": elapsed_ms,
+        "user_chars": len(user_text),
+        "assistant_chars": len(assistant_text),
+        "user_tokens_est": _estimate_tokens(user_text),
+        "assistant_tokens_est": _estimate_tokens(assistant_text),
+    }
+    print(
+        "[metrics]".ljust(12),
+        json.dumps(metrics, ensure_ascii=False),
+        file=sys.stderr,
+    )
+
+
 def _collect_quality_warnings(
     *,
     assistant_text: str,
@@ -247,6 +294,7 @@ def run_simulation(cfg: SimulationConfig) -> int:
 
     rng = random.Random(cfg.seed)
     skill = InsightSkill()
+    user_id = make_user_id(cfg.user_name, cfg.session_id)
     result = skill.handle_trigger(cfg.user_name, cfg.session_id)
     assistant_text = _render_assistant(result)
     print("[assistant]".ljust(12), assistant_text)
@@ -327,6 +375,14 @@ def run_simulation(cfg: SimulationConfig) -> int:
         assistant_text = _render_assistant(result)
         print("[assistant]".ljust(12), assistant_text)
         print("[elapsed_ms]".ljust(12), elapsed_ms)
+        if cfg.trace_metrics:
+            _print_metrics_trace(
+                user_text=user_text,
+                assistant_text=assistant_text,
+                elapsed_ms=elapsed_ms,
+            )
+        if cfg.trace_profile:
+            _print_profile_trace(user_id=user_id)
 
         if cfg.quality_check:
             assistant_total_count += 1
@@ -394,6 +450,8 @@ def _parse_args() -> SimulationConfig:
     parser.add_argument("--quality-check", action="store_true")
     parser.add_argument("--random-profile", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--trace-profile", action="store_true")
+    parser.add_argument("--trace-metrics", action="store_true")
     args = parser.parse_args()
 
     return SimulationConfig(
@@ -406,6 +464,8 @@ def _parse_args() -> SimulationConfig:
         quality_check=bool(args.quality_check),
         random_profile=bool(args.random_profile),
         seed=int(args.seed) if args.seed is not None else None,
+        trace_profile=bool(args.trace_profile),
+        trace_metrics=bool(args.trace_metrics),
     )
 
 
@@ -436,6 +496,8 @@ def main() -> int:
             quality_check=cfg.quality_check,
             random_profile=cfg.random_profile,
             seed=cfg.seed,
+            trace_profile=cfg.trace_profile,
+            trace_metrics=cfg.trace_metrics,
         )
         code = run_simulation(per_cfg)
         exit_code = exit_code or code
