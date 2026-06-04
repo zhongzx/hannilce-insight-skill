@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ class SimulationConfig:
     openrouter: str
     jsonl_out: str | None
     quality_check: bool
+    random_profile: bool
+    seed: int | None
 
 
 def _now_iso() -> str:
@@ -81,16 +84,28 @@ def _choose_profile_answer(
     scenario: str,
     assistant_text: str,
     outlier_birth_used: bool,
+    random_profile: bool,
+    rng: random.Random,
 ) -> str:
     if "确认就是这个" in assistant_text and "重新输入" in assistant_text:
         return "2" if scenario == "outlier_birth" else "0"
     if "YYYYMM" in assistant_text:
         if scenario == "outlier_birth":
             return "199603" if outlier_birth_used else "189603"
+        if random_profile:
+            now = datetime.now(UTC)
+            age_years = rng.randint(18, 45)
+            year = max(1850, now.year - age_years)
+            month = rng.randint(1, 12)
+            if year == now.year and month > now.month:
+                month = max(1, now.month)
+            return f"{year:04d}{month:02d}"
         if scenario == "happy":
             return "199803"
         return "0"
     if "技术/产品" in assistant_text and "运营/市场" in assistant_text:
+        if random_profile:
+            return str(rng.randint(1, 7))
         if scenario == "happy":
             return "1"
         if scenario == "outlier_birth":
@@ -102,6 +117,8 @@ def _choose_profile_answer(
         and "直接回数字" in assistant_text
     )
     if is_gender_prompt:
+        if random_profile:
+            return str(rng.choice([1, 2, 3, 4]))
         if scenario == "happy":
             return "1"
         return "4"
@@ -217,6 +234,7 @@ def run_simulation(cfg: SimulationConfig) -> int:
             "openrouter=on 但未检测到可用配置，将自动回退为无模型模式。",
         )
 
+    rng = random.Random(cfg.seed)
     skill = InsightSkill()
     result = skill.handle_trigger(cfg.user_name, cfg.session_id)
     assistant_text = _render_assistant(result)
@@ -256,6 +274,9 @@ def run_simulation(cfg: SimulationConfig) -> int:
                 scenario=cfg.scenario,
                 assistant_text=assistant_text,
                 outlier_birth_used=outlier_birth_used,
+                random_profile=cfg.random_profile
+                and cfg.scenario not in {"outlier_birth", "uncooperative"},
+                rng=rng,
             )
             if cfg.scenario == "outlier_birth" and user_text == "189603":
                 outlier_birth_used = True
@@ -359,6 +380,8 @@ def _parse_args() -> SimulationConfig:
     parser.add_argument("--openrouter", choices=["on", "off"], default="off")
     parser.add_argument("--jsonl-out", default=None)
     parser.add_argument("--quality-check", action="store_true")
+    parser.add_argument("--random-profile", action="store_true")
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
     return SimulationConfig(
@@ -369,6 +392,8 @@ def _parse_args() -> SimulationConfig:
         openrouter=str(args.openrouter),
         jsonl_out=str(args.jsonl_out) if args.jsonl_out else None,
         quality_check=bool(args.quality_check),
+        random_profile=bool(args.random_profile),
+        seed=int(args.seed) if args.seed is not None else None,
     )
 
 
@@ -396,6 +421,8 @@ def main() -> int:
             openrouter=cfg.openrouter,
             jsonl_out=cfg.jsonl_out,
             quality_check=cfg.quality_check,
+            random_profile=cfg.random_profile,
+            seed=cfg.seed,
         )
         code = run_simulation(per_cfg)
         exit_code = exit_code or code
