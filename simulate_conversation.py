@@ -378,7 +378,7 @@ def run_simulation(cfg: SimulationConfig) -> int:
         if (
             _should_force_summary(skill, cfg.scenario)
             and chat_turn_index >= 3
-            and not skill._awaiting_summary_feedback
+            and not getattr(skill, "_awaiting_summary_feedback", False)
         ):
             _force_summary_state(skill)
 
