@@ -136,14 +136,41 @@ def call_chat_completion(
     try:
         result = json.loads(raw)
     except json.JSONDecodeError:
+        if debug_enabled:
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            print(
+                f"[OPENROUTER] bad_response model={settings.model} "
+                f"reason=json_decode elapsed_ms={elapsed_ms} "
+                f"raw_len={len(raw)}",
+                file=sys.stderr,
+            )
         return None
 
     choices = result.get("choices", [])
     if not choices:
+        if debug_enabled:
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            keys = ",".join(sorted(str(k) for k in result))
+            has_error = "error" in result
+            print(
+                f"[OPENROUTER] bad_response model={settings.model} "
+                f"reason=no_choices elapsed_ms={elapsed_ms} "
+                f"has_error={has_error} keys={keys}",
+                file=sys.stderr,
+            )
         return None
     message = choices[0].get("message", {})
     content = message.get("content")
     if not isinstance(content, str) or not content.strip():
+        if debug_enabled:
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            content_type = type(content).__name__
+            print(
+                f"[OPENROUTER] bad_response model={settings.model} "
+                f"reason=empty_content elapsed_ms={elapsed_ms} "
+                f"content_type={content_type}",
+                file=sys.stderr,
+            )
         return None
     return content.strip()
 
