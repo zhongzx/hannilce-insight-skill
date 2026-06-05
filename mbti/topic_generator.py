@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mbti import db
@@ -181,8 +181,8 @@ class TopicGenerator:
 
     def _default_expires(self) -> str:
         """默认过期时间：当前时间 + 24 小时。"""
-        exp = datetime.now(timezone.utc).timestamp() + 86400
-        return datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+        exp = datetime.now(UTC).timestamp() + 86400
+        return datetime.fromtimestamp(exp, tz=UTC).isoformat()
 
     # -------------------------------------------------------------------------
     # 初始化内置话题池

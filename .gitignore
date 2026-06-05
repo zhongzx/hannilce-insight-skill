@@ -35,6 +35,12 @@ build/
 # Logs
 *.log
 
+# Local databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+
 # OS
 .DS_Store
 Thumbs.db
@@ -48,3 +54,6 @@ secrets/
 # Temp
 tmp/
 temp/
+
+# Local artifacts
+artifacts/

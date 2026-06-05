@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from mbti import db
 from mbti.models import MBTIProfile, make_user_id
 from mbti.quality_controller import QualityController
 from mbti.session_manager import SessionManager
-from mbti.topic_generator import TopicGenerator
+from mbti.topic_generator_v2 import TopicGeneratorV2
 from openrouter_client import (
     call_chat_completion,
     load_openrouter_settings,
@@ -269,6 +269,7 @@ _DEFAULT_TYPE_DESC = {
 
 def _render_report(profile: MBTIProfile, round_count: int) -> str:
     """渲染 MBTI 分析报告。"""
+    mbti_type = profile.final_type or profile.dimensions.to_mbti_type()
     settings = load_openrouter_settings()
     if settings:
         history = db.get_conversation_history(profile.user_id, limit=50)
@@ -284,7 +285,12 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
             "关系与沟通、成长建议\n"
             "2) 用具体措辞引用对话中的线索（不要捏造不存在的细节）\n"
             "3) 如果信息不足，明确说明需要补充什么信息\n"
-            "4) 只输出 Markdown，不要输出代码块外的解释\n\n"
+            "4) 维度名称必须严格使用：EI(外向E/内向I)、SN(实感S/直觉N)、"
+            "TF(思考T/情感F)、JP(判断J/知觉P)，不要写错维度对\n"
+            f"5) 最终类型必须使用：{mbti_type}（以画像为准），"
+            "如证据存在冲突，只说明冲突点，不要擅自改类型\n"
+            "6) 全文用“你”称呼，不要用“您”\n"
+            "7) 只输出 Markdown，不要输出代码块外的解释\n\n"
             f"用户：{profile.name}\n"
             f"轮数：{round_count}\n"
             "当前画像摘要："
@@ -305,7 +311,6 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
         if content:
             return content
 
-    mbti_type = profile.final_type or "XXXX"
     type_info = _MBTI_TYPE_DESCRIPTIONS.get(mbti_type, _DEFAULT_TYPE_DESC)
 
     def dim_info(dim_name: str, letter: str) -> tuple:
@@ -382,7 +387,7 @@ class InsightSkill:
 
     def __init__(self):
         self._sm: SessionManager | None = None
-        self._tg: TopicGenerator | None = None
+        self._tg: TopicGeneratorV2 | None = None
         self._qc: QualityController | None = None
         self._current_topic: str | None = None
         self._current_dimension: str | None = None
@@ -395,13 +400,17 @@ class InsightSkill:
         """初始化子模块。"""
         db.init_db()
         self._sm = SessionManager()
-        self._tg = TopicGenerator()
+        self._tg = TopicGeneratorV2()
         self._qc = QualityController()
 
     def handle_trigger(
         self,
         user_name: str,
         timestamp_iso: str,
+        *,
+        gender: str | None = None,
+        birth_yyyymm: str | None = None,
+        occupation: str | None = None,
     ) -> dict:
         """
         处理 /MBTI 触发。
@@ -423,12 +432,26 @@ class InsightSkill:
         self.init()
 
         # 获取/创建会话
-        ctx = self._sm.get_or_create(user_name, timestamp_iso)
+        ctx = self._sm.get_or_create(
+            user_name,
+            timestamp_iso,
+            gender=gender,
+            birth_yyyymm=birth_yyyymm,
+            occupation=occupation,
+        )
         profile: MBTIProfile = ctx["profile"]
         is_new = ctx["is_new"]
 
-        # 生成话题
-        next_topic = self._tg.get_next(user_id=profile.user_id)
+        avoid_dimensions = [
+            key
+            for key, value in profile.dimension_confidences.model_dump().items()
+            if isinstance(value, float) and value >= 0.7
+        ]
+
+        next_topic = self._tg.get_next(
+            user_id=profile.user_id,
+            avoid_dimensions=avoid_dimensions,
+        )
         topic = next_topic["topic"]
         dimension = next_topic["dimension"]
         topic_source = next_topic.get("source")
@@ -466,12 +489,13 @@ class InsightSkill:
 
         Returns:
             {
-                "type": "next_topic" | "report",
+                "type": "next_topic" | "report" | "archive",
                 "topic": str,           # 下一话题（仅 next_topic）
                 "dimension": str,       # 下一维度（仅 next_topic）
                 "profile": dict,        # 当前画像摘要
                 "quality": dict,        # 本轮评分详情
                 "report": str,          # 分析报告（仅 report）
+                "message": str,         # 结束提示（仅 archive）
                 "should_archive": bool, # 是否应结束话题
                 "archive_reason": str,  # 结束原因
             }
@@ -486,10 +510,12 @@ class InsightSkill:
             user_id=user_id,
             topic=self._current_topic or "",
             user_response=user_response,
+            dimension=self._current_dimension,
         )
         token_score = quality_result["token_score"]
         semantic_score = quality_result["semantic_score"]
         confidence = quality_result["confidence"]
+        round_score = quality_result.get("round_score")
         should_archive = quality_result["should_archive"]
         archive_reason = quality_result["archive_reason"]
 
@@ -511,6 +537,8 @@ class InsightSkill:
             user_id=user_id,
             dimension=self._current_dimension or "EI",
             score=(semantic_score * 0.6 + token_score * 0.4),  # 综合评分更新维度
+            round_score=float(round_score) if isinstance(round_score, float) else None,
+            session_confidence=confidence,
         )
 
         # 4. 检查是否应输出报告
@@ -519,21 +547,43 @@ class InsightSkill:
         topic = None
         dimension = None
         next_topic_source = None
+        message = None
+        is_finish = should_archive and archive_reason == "达成结束条件"
 
         if should_archive:
-            # 生成报告
-            report = _render_report(profile, round_count)
+            if is_finish:
+                report = _render_report(profile, round_count)
+            else:
+                message = (
+                    "本次对话质量波动较大，为避免误判，我先暂停本次测评。"
+                    "你可以稍后重新触发再继续。"
+                )
         else:
             # 获取下一个话题
-            next_topic = self._tg.get_next(user_id=user_id)
+            avoid_dimensions = [
+                key
+                for key, value in profile.dimension_confidences.model_dump().items()
+                if isinstance(value, float) and value >= 0.7
+            ]
+            next_topic = self._tg.get_next(
+                user_id=user_id,
+                avoid_dimensions=avoid_dimensions,
+            )
             topic = next_topic["topic"]
             dimension = next_topic["dimension"]
             next_topic_source = next_topic.get("source")
             self._current_topic = topic
             self._current_dimension = dimension
 
+        if is_finish:
+            result_type = "report"
+        elif should_archive:
+            result_type = "archive"
+        else:
+            result_type = "next_topic"
+
         return {
-            "type": "report" if should_archive else "next_topic",
+            "type": result_type,
             "topic": topic,
             "dimension": dimension,
             "topic_source": next_topic_source,
@@ -543,8 +593,13 @@ class InsightSkill:
                 "semantic_score": semantic_score,
                 "semantic_source": quality_result.get("semantic_source"),
                 "confidence": confidence,
+                "repeat_contradiction_score": quality_result.get(
+                    "repeat_contradiction_score"
+                ),
+                "round_score": quality_result.get("round_score"),
             },
             "report": report,
+            "message": message,
             "should_archive": should_archive,
             "archive_reason": archive_reason,
         }
@@ -583,14 +638,25 @@ def run(user_name: str, timestamp_iso: str | None = None) -> dict:
         首次触发结果（next_topic）
     """
     if timestamp_iso is None:
-        timestamp_iso = datetime.now(timezone.utc).isoformat()
+        timestamp_iso = datetime.now(UTC).isoformat()
 
     skill = InsightSkill()
     return skill.handle_trigger(user_name, timestamp_iso)
 
 
 def _run_repl(user_name: str) -> int:
-    timestamp_iso = datetime.now(timezone.utc).isoformat()
+    settings = load_openrouter_settings()
+    if settings is None:
+        print(
+            "未检测到 OpenRouter 配置，将使用内置话题池与启发式评分。"
+            "如需启用动态话题与 LLM 评分，请设置环境变量 "
+            "OPENROUTER_API_KEY / OPENROUTER_MODEL，或在项目根目录创建 "
+            ".openrouter.json（已在 .gitignore）。"
+        )
+    else:
+        print(f"OpenRouter 已启用：model={settings.model}")
+
+    timestamp_iso = datetime.now(UTC).isoformat()
     skill = InsightSkill()
 
     trigger_result = skill.handle_trigger(user_name, timestamp_iso)
@@ -628,6 +694,17 @@ def _run_repl(user_name: str) -> int:
             else:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
+        if result.get("type") == "archive":
+            message = result.get("message")
+            reason = result.get("archive_reason")
+            if isinstance(message, str) and message.strip():
+                if isinstance(reason, str) and reason.strip():
+                    print(f"{message}  (reason={reason})")
+                else:
+                    print(message)
+            else:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
 
         quality = result.get("quality") or {}
         profile = result.get("profile") or {}
@@ -637,6 +714,8 @@ def _run_repl(user_name: str) -> int:
             f"token={quality.get('token_score')} "
             f"semantic={quality.get('semantic_score')} "
             f"(source={quality.get('semantic_source')}) "
+            f"repeat={quality.get('repeat_contradiction_score')} "
+            f"round={quality.get('round_score')} "
             f"confidence={quality.get('confidence')}"
         )
         print(
@@ -658,21 +737,153 @@ def _run_repl(user_name: str) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
-if __name__ == "__main__":
-    # 简单测试
+def _as_str(value: object) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return None
+
+
+def _extract_text(payload: dict[str, object]) -> str | None:
+    for key in ("text", "input", "message", "content", "user_response"):
+        value = _as_str(payload.get(key))
+        if value:
+            return value
+    return None
+
+
+def _extract_session_id(payload: dict[str, object]) -> str:
+    for key in ("session_id", "session", "conversation_id", "thread_id", "run_id"):
+        value = _as_str(payload.get(key))
+        if value:
+            return value
+    return datetime.now(UTC).isoformat()
+
+
+def _extract_user_name(payload: dict[str, object], text: str | None) -> str | None:
+    for key in ("user_name", "name", "user"):
+        value = _as_str(payload.get(key))
+        if value:
+            return value
+    if text:
+        return parse_trigger(text)
+    return None
+
+
+def _is_trigger(text: str | None, payload: dict[str, object]) -> bool:
+    event_type = _as_str(payload.get("type")) or _as_str(payload.get("event"))
+    if event_type:
+        return event_type.lower() in {"trigger", "command", "start"}
+    if text:
+        return parse_trigger(text) is not None
+    return False
+
+
+def _extract_profile_fields(
+    payload: dict[str, object],
+) -> tuple[str | None, str | None, str | None]:
+    gender = _as_str(payload.get("gender")) or _as_str(payload.get("sex"))
+    birth_yyyymm = _as_str(payload.get("birth_yyyymm")) or _as_str(payload.get("birth"))
+    occupation = _as_str(payload.get("occupation")) or _as_str(payload.get("job"))
+    return gender, birth_yyyymm, occupation
+
+
+def _run_skill_loop() -> int:
     import sys
 
-    if len(sys.argv) >= 2 and sys.argv[1] == "--repl":
-        if len(sys.argv) >= 3:
-            sys.exit(_run_repl(sys.argv[2]))
+    skills: dict[str, InsightSkill] = {}
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        try:
+            payload_obj = json.loads(line)
+            if not isinstance(payload_obj, dict):
+                raise ValueError("payload must be a JSON object")
+            payload: dict[str, object] = payload_obj
+
+            text = _extract_text(payload)
+            session_id = _extract_session_id(payload)
+            user_name = _extract_user_name(payload, text)
+            gender, birth_yyyymm, occupation = _extract_profile_fields(payload)
+
+            if not user_name:
+                raise ValueError("missing user_name")
+
+            key = f"{user_name}:{session_id}"
+            is_trigger = _is_trigger(text, payload)
+
+            if is_trigger:
+                skill = skills.get(key)
+                if skill is None:
+                    skill = InsightSkill()
+                    skills[key] = skill
+                result = skill.handle_trigger(
+                    user_name=user_name,
+                    timestamp_iso=session_id,
+                    gender=gender,
+                    birth_yyyymm=birth_yyyymm,
+                    occupation=occupation,
+                )
+            else:
+                skill = skills.get(key)
+                if skill is None:
+                    result = {
+                        "type": "error",
+                        "error": "missing_session_state",
+                        "message": "会话状态缺失，请重新发送 /MBTI <姓名> 触发。",
+                    }
+                else:
+                    user_response = text or ""
+                    result = skill.handle_response(
+                        user_name=user_name,
+                        timestamp_iso=session_id,
+                        user_response=user_response,
+                    )
+
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+        except Exception as exc:  # noqa: BLE001
+            error_result = {"type": "error", "error": str(exc)}
+            print(json.dumps(error_result, ensure_ascii=False), flush=True)
+
+    return 0
+
+
+if __name__ == "__main__":
+    # 简单测试
+    import os
+    import sys
+
+    raw_args = sys.argv[1:]
+    if "--openrouter-model" in raw_args:
+        idx = raw_args.index("--openrouter-model")
+        if idx + 1 < len(raw_args):
+            os.environ.setdefault("OPENROUTER_MODEL", raw_args[idx + 1])
+            del raw_args[idx : idx + 2]
+
+    if "--openrouter-config" in raw_args:
+        idx = raw_args.index("--openrouter-config")
+        if idx + 1 < len(raw_args):
+            os.environ["OPENROUTER_CONFIG"] = raw_args[idx + 1]
+            del raw_args[idx : idx + 2]
+
+    if not raw_args and not sys.stdin.isatty():
+        sys.exit(_run_skill_loop())
+
+    if raw_args and raw_args[0] == "--repl":
+        if len(raw_args) >= 2:
+            sys.exit(_run_repl(raw_args[1]))
         sys.exit(_run_repl(input("请输入姓名> ").strip()))
 
-    if len(sys.argv) > 1:
-        result = run(sys.argv[1])
+    if raw_args:
+        result = run(raw_args[0])
         print(json.dumps(result, ensure_ascii=False, indent=2))
         sys.exit(0)
 
     print(
-        "用法: python insight_skill.py <姓名> | python insight_skill.py --repl <姓名>"
+        "用法: python insight_skill.py <姓名> | python insight_skill.py --repl <姓名>\n"
+        "可选参数: --openrouter-model <model> | --openrouter-config <path>"
     )
     sys.exit(2)

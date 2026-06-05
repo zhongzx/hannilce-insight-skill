@@ -3,7 +3,7 @@
 # ============================================================
 # Ruff: Fast Python linter & formatter (Black + Flake8 + isort)
 
-target-version = "py310"
+target-version = "py311"
 
 [lint]
 # 启用规则组

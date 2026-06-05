@@ -7,11 +7,16 @@
 
 ## 代码质量（Ruff）
 
+- Ruff 安装在虚拟环境中，优先使用以下命令（避免系统 PATH 找不到 `ruff`）：
+  - `./.venv/bin/ruff --version`
+  - `./.venv/bin/ruff check .`
+  - `./.venv/bin/ruff format --check .`
 - 提交前必须通过：
-  - `ruff check .`
-  - `ruff format --check .`
+  - `./.venv/bin/ruff check .`
+  - `./.venv/bin/ruff format --check .`
 - 如需自动修复格式：
-  - `ruff format .`
+  - `./.venv/bin/ruff format .`
+  - `./.venv/bin/ruff check . --fix`
 
 ## 密钥与配置（必须遵守）
 
