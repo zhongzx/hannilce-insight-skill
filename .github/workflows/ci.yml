@@ -77,6 +77,16 @@ jobs:
             --ci \
             --jsonl-out artifacts/ci/offline.jsonl 2>&1 | tee artifacts/ci/offline.log
 
+      - name: Token notice
+        run: |
+          {
+            echo "## 回归验收说明"
+            echo ""
+            echo "- 本 job 为离线回归，不会调用 OpenRouter，不消耗 token/额度。"
+            echo "- 如需真实模型回归，请查看 \"Regression (LLM, soft)\" job。"
+            echo ""
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
       - name: Summarize
         run: |
           python simulate_conversation.py --summarize-jsonl artifacts/ci/offline.jsonl
@@ -112,6 +122,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Token notice
+        run: |
+          {
+            echo "## 回归验收说明"
+            echo ""
+            echo "- 本 job 会调用 OpenRouter（使用仓库 Secrets 注入的 OPENROUTER_API_KEY/OPENROUTER_MODEL）。"
+            echo "- 会产生 token/额度消耗，适合用于验证真实链路与对话/报告输出质量。"
+            echo "- 本 job 为软验收（continue-on-error），不会阻断合并。"
+            echo ""
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Run simulator regression (LLM)
         env:
