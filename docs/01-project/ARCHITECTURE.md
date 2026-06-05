@@ -1,42 +1,32 @@
 # 系统架构设计
 
-> 版本：v0.1（初始骨架，待迭代完善）
+> 版本：v1.0
+> 状态：与 DESIGN.md 对齐（设计冻结）
 > 更新：2026-06-03
 
 ---
 
 ## 1. 整体架构
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     User Interface (IM)                     │
-│                    触发词: /MBTI <姓名>                      │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Session Manager                          │
-│  - 创建/恢复会话（基于姓名+首次认证时间戳哈希）                │
-│  - 维护会话上下文状态                                         │
-│  - 判断结束条件（质量达标 + 四维覆盖 + 数据充分）             │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-┌─────────────────┐ ┌──────────┐ ┌──────────────────┐
-│  TopicGenerator  │ │ Quality  │ │  ArchiveManager  │
-│  话题生成器      │ │Controller │ │   封存管理器      │
-│  - LLM动态生成   │ │ 质量控制  │ │ - 滑动窗口监控   │
-│  - 新闻种子触发  │ │ - 双层评分│ │ - 触发封存判断  │
-└─────────────────┘ └──────────┘ └──────────────────┘
-          │            │            │
-          └────────────┼────────────┘
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       Data Layer                              │
-│  - SQLite（WAL 模式）：MBTIProfile, ConversationLog, QualityLog│
-│  - JSON 导出：用户数据可迁移                                   │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    UI["User Interface (IM)<br/>触发词: /MBTI <姓名>"]
+
+    SM[Session Manager<br/>- 创建/恢复会话（基于姓名+首次触发时间戳哈希）<br/>- 维护会话上下文状态<br/>- 判断结束条件（质量达标 + 四维覆盖 + 数据充分）]
+
+    TG[TopicGenerator<br/>话题生成器<br/>- LLM动态生成<br/>- 新闻种子锚点]
+    QC[QualityController<br/>质量控制<br/>- 混合评分]
+    AM[ArchiveManager<br/>封存管理器<br/>- 滑动窗口监控<br/>- 触发封存判断]
+
+    DL[Data Layer<br/>- SQLite（WAL模式）：MBTIProfile, ConversationLog, QualityLog<br/>- JSON导出：用户数据可迁移]
+
+    UI --> SM
+    SM --> TG
+    SM --> QC
+    SM --> AM
+    TG --> DL
+    QC --> DL
+    AM --> DL
 ```
 
 ---
@@ -47,7 +37,8 @@
 
 | 职责 | 说明 |
 |------|------|
-| 会话创建 | 姓名 + 首次认证时间戳哈希 → 唯一标识 |
+| 用户标识 | 姓名 + 出生年月（YYYYMM） → `user_key` |
+| 会话创建 | 姓名 + 首次触发时间戳哈希 → `session_id` |
 | 上下文维护 | 继承完整对话历史，支持跨 Session 唤醒 |
 | 结束判断 | 质量达标 + 四维覆盖 + 数据充分，三者同时满足 |
 
@@ -58,9 +49,9 @@
 | 职责 | 说明 |
 |------|------|
 | 动态生成 | LLM 根据当前会话状态动态生成话题 |
-| 种子来源 | 定时从新闻网站抓取，24h 失效 |
-| 兜底机制 | 10 个内置话题（新闻采集失败时启用） |
-| 维度映射 | 待定（考虑使用推理模型辅助） |
+| 种子来源 | 从本地种子缓存中按画像筛选 1-2 条摘要作为锚点，24h 失效 |
+| 兜底机制 | 允许纯 LLM 生成（零资料），但禁止引用真实具体事件或人物 |
+| 维度映射 | 基于会话维度置信度控制重复（置信度高则降低优先级） |
 
 **话题维度**：E/I · S/N · T/F · J/P 四维覆盖，确保分析完整性。
 
@@ -72,10 +63,13 @@
 | 语义层评分 | 衡量回复质量与相关性 |
 | 监控机制 | 滑动窗口，检测质量趋势 |
 
-**评分模型**（初版）：
+**评分模型**（与 DESIGN.md 对齐）：
 ```
-置信度 = Token量 × 质量分 × 一致性
+综合评分 = Token量分×0.3 + 重复/矛盾分×0.3 + 语义分×0.4
+会话级置信度 = 最近 5 轮综合评分的滑动平均
 ```
+
+**语义分获取**：同一段回答调用 LLM 评分 3 次（温度 0.2），取中位数；异常值按离差规则剔除后取平均。
 
 ### 2.4 ArchiveManager（封存管理器）
 
@@ -105,7 +99,7 @@
 ```sql
 -- 用户画像表
 CREATE TABLE mbti_profiles (
-    user_id        TEXT PRIMARY KEY,   -- 姓名+首次认证时间戳哈希
+    user_key       TEXT PRIMARY KEY,   -- 姓名+出生年月（YYYYMM）
     final_type     TEXT,               -- 最终推断的 MBTI 类型（如 INFP）
     confidence     REAL,               -- 置信度 0.0~1.0
     dimensions     TEXT,               -- 四维打分 JSON
@@ -117,33 +111,35 @@ CREATE TABLE mbti_profiles (
 -- 对话日志表
 CREATE TABLE conversation_logs (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id        TEXT,
+    user_key       TEXT,
+    session_id     TEXT,               -- 姓名+首次触发时间戳哈希
     topic          TEXT,
     user_response  TEXT,
     ai_topic       TEXT,
     timestamp      TEXT,
-    FOREIGN KEY (user_id) REFERENCES mbti_profiles(user_id)
+    FOREIGN KEY (user_key) REFERENCES mbti_profiles(user_key)
 );
 
 -- 质量评分日志表
 CREATE TABLE quality_logs (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id        TEXT,
+    user_key       TEXT,
+    session_id     TEXT,               -- 姓名+首次触发时间戳哈希
     token_score    REAL,               -- Token 层评分
     semantic_score REAL,               -- 语义层评分
     confidence     REAL,               -- 综合置信度
     timestamp      TEXT,
-    FOREIGN KEY (user_id) REFERENCES mbti_profiles(user_id)
+    FOREIGN KEY (user_key) REFERENCES mbti_profiles(user_key)
 );
 
--- 话题池表
-CREATE TABLE topic_pool (
+-- 种子素材缓存表（用于生成话题的“锚点”，不是静态话题池）
+CREATE TABLE seed_topics (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic          TEXT,
-    dimension      TEXT,                -- E/I/S/N/T/F/J/P
-    source         TEXT,                -- 内置/新闻抓取
+    summary        TEXT,
+    tags           TEXT,                -- JSON：职业/年龄段/性别等筛选标签
+    source         TEXT,                -- 新闻抓取/本地缓存
     created_at     TEXT,
-    expires_at     TEXT                 -- 新闻话题 24h 过期
+    expires_at     TEXT                 -- 24h 过期
 );
 ```
 
@@ -170,7 +166,8 @@ CREATE INDEX idx_quality_timestamp ON quality_logs(timestamp);
 | 决策 | 选择 | 理由 |
 |------|------|------|
 | 存储引擎 | SQLite WAL | 单用户文件级数据库，高可靠，迁移成本低 |
-| 会话标识 | 姓名+时间戳哈希 | 唯一、不可推测、保护隐私 |
+| 用户标识 | 姓名+出生年月（YYYYMM） | 便于唤醒与区分同名用户，隐私字段最小化 |
+| 会话标识 | 姓名+首次触发时间戳哈希 | 唯一、不可推测、保护隐私 |
 | 质量控制 | 被动监控，不干预 | 保真优先，避免引导失真 |
 | 话题生成 | LLM 动态 + 新闻种子 | 兼顾质量与时效性 |
 | 数据导出 | JSON | 轻量、通用、跨平台迁移 |

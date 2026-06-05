@@ -1,10 +1,22 @@
 name: CI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   push:
-    branches: [master, develop]
+    branches: [main]
   pull_request:
-    branches: [master, develop]
+    branches: [main, "pr/**"]
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      run_llm:
+        description: "是否运行可选的 LLM 验收（不阻断合并）"
+        required: false
+        default: "false"
+  schedule:
+    - cron: "*/15 * * * *"
 
 jobs:
   lint:
@@ -30,8 +42,8 @@ jobs:
           ruff check .
           ruff format --check .
 
-  test:
-    name: Test
+  regression-offline:
+    name: Regression (offline, hard fail)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,9 +56,111 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -e .[dev] 2>/dev/null || true
-
-      - name: Run tests
         run: |
-          pip install pytest pytest-cov 2>/dev/null || true
-          pytest --cov=hannilce_insight --cov-report=term-missing tests/ 2>/dev/null || echo "Tests not implemented yet — skipping"
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run simulator regression
+        run: |
+          mkdir -p artifacts/ci
+          set -o pipefail
+          python simulate_conversation.py \
+            --scenario all \
+            --openrouter off \
+            --llm-signals off \
+            --llm-semantic off \
+            --unified-llm off \
+            --max-turns 12 \
+            --seed 123 \
+            --random-profile \
+            --quality-check \
+            --ci \
+            --jsonl-out artifacts/ci/offline.jsonl 2>&1 | tee artifacts/ci/offline.log
+
+      - name: Token notice
+        run: |
+          {
+            echo "## 回归验收说明"
+            echo ""
+            echo "- 本 job 为离线回归，不会调用 OpenRouter，不消耗 token/额度。"
+            echo "- 如需真实模型回归，请查看 \"Regression (LLM, soft)\" job。"
+            echo ""
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Summarize
+        run: |
+          python simulate_conversation.py --summarize-jsonl artifacts/ci/offline.jsonl
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-offline-logs
+          path: artifacts/ci/
+
+  regression-llm:
+    name: Regression (LLM, soft)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' && inputs.run_llm == 'true' ||
+      github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.fork == false &&
+        contains(join(github.event.pull_request.labels.*.name, ','), 'run-llm-ci')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Token notice
+        run: |
+          {
+            echo "## 回归验收说明"
+            echo ""
+            echo "- 本 job 会调用 OpenRouter（使用仓库 Secrets 注入的 OPENROUTER_API_KEY/OPENROUTER_MODEL）。"
+            echo "- 会产生 token/额度消耗，适合用于验证真实链路与对话/报告输出质量。"
+            echo "- 本 job 为软验收（continue-on-error），不会阻断合并。"
+            echo ""
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run simulator regression (LLM)
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
+          OPENROUTER_DEBUG: "1"
+        run: |
+          mkdir -p artifacts/ci
+          set -o pipefail
+          python simulate_conversation.py \
+            --scenario report \
+            --openrouter on \
+            --llm-signals on \
+            --llm-semantic on \
+            --unified-llm on \
+            --max-turns 30 \
+            --seed 123 \
+            --random-profile \
+            --quality-check \
+            --jsonl-out artifacts/ci/llm.jsonl 2>&1 | tee artifacts/ci/llm.log || true
+
+      - name: Summarize
+        run: |
+          python simulate_conversation.py --summarize-jsonl artifacts/ci/llm.jsonl || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-llm-logs
+          path: artifacts/ci/

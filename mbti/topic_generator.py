@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mbti import db
+from openrouter_client import (
+    call_chat_completion,
+    load_openrouter_settings,
+)
 
 # ---------------------------------------------------------------------------
 # 内置话题池（静态兜底）
@@ -152,7 +156,10 @@ class TopicGenerator:
             return []
 
         with open(self.seed_path, encoding="utf-8") as f:
-            raw = json.load(f)
+            try:
+                raw = json.load(f)
+            except json.JSONDecodeError:
+                return []
 
         # 兼容不同格式
         topics = raw if isinstance(raw, list) else raw.get("topics", [])
@@ -162,7 +169,10 @@ class TopicGenerator:
         # 写入话题池表（去重，由 db.upsert_topic 保证）
         for item in topics:
             topic_text = item.get("title") or item.get("topic", "")
-            dimension = item.get("dimension", random.choice(["EI", "SN", "TF", "JP"]))
+            dimension = item.get(
+                "dimension",
+                random.choice(["EI", "SN", "TF", "JP"]),
+            )
             source = "news"
             expires = item.get("expires_at") or self._default_expires()
             db.upsert_topic(topic_text, dimension, source, expires)
@@ -171,8 +181,8 @@ class TopicGenerator:
 
     def _default_expires(self) -> str:
         """默认过期时间：当前时间 + 24 小时。"""
-        exp = datetime.now(timezone.utc).timestamp() + 86400
-        return datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+        exp = datetime.now(UTC).timestamp() + 86400
+        return datetime.fromtimestamp(exp, tz=UTC).isoformat()
 
     # -------------------------------------------------------------------------
     # 初始化内置话题池
@@ -187,7 +197,10 @@ class TopicGenerator:
         """
         count = 0
         for item in _BUILTIN_TOPICS:
-            existing = db.get_valid_topics(dimension=item["dimension"], limit=100)
+            existing = db.get_valid_topics(
+                dimension=item["dimension"],
+                limit=100,
+            )
             if any(t["topic"] == item["topic"] for t in existing):
                 continue
             db.upsert_topic(
@@ -233,17 +246,38 @@ class TopicGenerator:
         topics = self._get_db_topics(dimension=dimension, asked=asked_topics)
         if topics:
             chosen = random.choice(topics)
-            return self._format_topic(chosen)
+            seed = self._format_topic(chosen)
+            rewritten = self._try_rewrite_seed(
+                user_id=user_id,
+                seed=seed,
+                asked_topics=asked_topics,
+            )
+            return rewritten or seed
 
         # 降级：其他维度
         if dimension:
             topics = self._get_db_topics(dimension=None, asked=asked_topics)
             if topics:
                 chosen = random.choice(topics)
-                return self._format_topic(chosen)
+                seed = self._format_topic(chosen)
+                rewritten = self._try_rewrite_seed(
+                    user_id=user_id,
+                    seed=seed,
+                    asked_topics=asked_topics,
+                )
+                return rewritten or seed
 
         # 降级：内置话题
-        return self._get_builtin_fallback(dimension=dimension, asked=asked_topics)
+        seed = self._get_builtin_fallback(
+            dimension=dimension,
+            asked=asked_topics,
+        )
+        rewritten = self._try_rewrite_seed(
+            user_id=user_id,
+            seed=seed,
+            asked_topics=asked_topics,
+        )
+        return rewritten or seed
 
     def _get_db_topics(
         self,
@@ -274,7 +308,75 @@ class TopicGenerator:
         return {
             "topic": row["topic"],
             "dimension": row["dimension"],
-            "source": row["source"],
+            "source": row.get("source", "builtin"),
+        }
+
+    def _try_rewrite_seed(
+        self,
+        *,
+        user_id: str,
+        seed: dict,
+        asked_topics: set[str],
+    ) -> dict | None:
+        settings = load_openrouter_settings()
+        if not settings:
+            return None
+
+        seed_topic = seed.get("topic")
+        seed_dimension = seed.get("dimension")
+        if not isinstance(seed_topic, str) or not isinstance(
+            seed_dimension,
+            str,
+        ):
+            return None
+
+        history = db.get_conversation_history(user_id, limit=10)
+        history_lines = "\n".join(
+            f"- Q: {item.get('topic', '')}\n  A: {item.get('user_response', '')[:80]}"
+            for item in history
+        )
+        asked_preview = "\n".join(list(asked_topics)[:10])
+        prompt = (
+            "你是一个 MBTI 话题设计专家。下面给你一个“种子话题”，"
+            "请把它改写成更自然、更开放、更容易引导用户讲故事的一个问题。\n\n"
+            "要求：\n"
+            "1) 只输出一行问题文本，不要输出 JSON，不要解释\n"
+            "2) 不要变成选择题，尽量让用户讲经历/例子\n"
+            "3) 不要与已问过话题重复\n"
+            f"4) 保持维度不变：{seed_dimension}\n\n"
+            f"种子话题：{seed_topic}\n\n"
+            f"最近对话：\n{history_lines or '（无对话记录）'}\n\n"
+            f"已问过话题（截断）：\n{asked_preview or '（无）'}\n"
+        )
+        content = call_chat_completion(
+            settings=settings,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你擅长把种子话题改写成开放式提问。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        if not content:
+            return None
+
+        topic = content.strip()
+        if not topic:
+            return None
+        if topic in asked_topics:
+            return None
+
+        db.upsert_topic(
+            topic=topic,
+            dimension=seed_dimension,
+            source="llm_rewrite",
+            expires_at=None,
+        )
+        return {
+            "topic": topic,
+            "dimension": seed_dimension,
+            "source": "llm_rewrite",
         }
 
     # -------------------------------------------------------------------------
@@ -320,16 +422,20 @@ class TopicGenerator:
         dim_scores = {k: abs(v - 0.5) for k, v in dimensions.items()}
         uncertain_dims = sorted(dim_scores, key=dim_scores.get)
 
-        target_line = (
-            f"（优先探索维度：{dim_map.get(target_dimension, random.choice(uncertain_dims))}）"
-            if target_dimension
-            else ""
-        )
+        if target_dimension:
+            target_dim = dim_map.get(
+                target_dimension,
+                random.choice(uncertain_dims),
+            )
+            target_line = f"（优先探索维度：{target_dim}）"
+        else:
+            target_line = ""
 
         return f"""你是一个 MBTI 话题设计专家。请为用户生成下一个分析话题。
 
 ## 用户当前画像
-- 四维打分：EI={dimensions.get("EI", 0.5):.0%} / SN={dimensions.get("SN", 0.5):.0%} / TF={dimensions.get("TF", 0.5):.0%} / JP={dimensions.get("JP", 0.5):.0%}
+- 四维打分：EI={dimensions.get("EI", 0.5):.0%} / SN={dimensions.get("SN", 0.5):.0%}
+  TF={dimensions.get("TF", 0.5):.0%} / JP={dimensions.get("JP", 0.5):.0%}
 - 最不确定维度：{dim_map.get(uncertain_dims[0], "EI")}（分值最接近50%，需要深入探索）
 
 ## 最近对话 {target_line}

@@ -1,18 +1,32 @@
 """
 数据库层：SQLite WAL 模式初始化 + 表结构管理
 
-路径：/home/gem/.aily/workspace/mbti/sessions.db
+路径：默认 ~/.hermes/mbti/sessions.db，可通过环境变量 MBTI_DB_PATH 覆盖
 模式：WAL（Write-Ahead Logging），支持并发读写
 """
 
+from __future__ import annotations
+
+import os
 import sqlite3
-from datetime import timezone
+from datetime import UTC
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # 路径配置
 # ---------------------------------------------------------------------------
-DB_PATH = Path(__file__).parent / "sessions.db"
+
+
+def _get_db_path() -> str:
+    override = os.environ.get("MBTI_DB_PATH")
+    if override:
+        if override == ":memory:":
+            return override
+        path = Path(os.path.expanduser(override))
+    else:
+        path = Path(os.path.expanduser("~/.hermes/mbti/sessions.db"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 # ---------------------------------------------------------------------------
@@ -28,11 +42,12 @@ def get_connection(foreign_keys: bool = True) -> sqlite3.Connection:
     Returns:
         sqlite3.Connection 对象
     """
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(_get_db_path(), check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute(
-        "PRAGMA foreign_keys = ON" if foreign_keys else "PRAGMA foreign_keys = OFF"
-    )
+    foreign_key_pragma = "PRAGMA foreign_keys = ON"
+    if not foreign_keys:
+        foreign_key_pragma = "PRAGMA foreign_keys = OFF"
+    conn.execute(foreign_key_pragma)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -53,14 +68,33 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS mbti_profiles (
             user_id        TEXT PRIMARY KEY,   -- 姓名+首次认证时间戳哈希
             name           TEXT,               -- 用户姓名（原始）
+            gender         TEXT,               -- 性别（可选）
+            birth_yyyymm   TEXT,               -- 出生年月（YYYYMM，可选）
+            occupation     TEXT,               -- 职业（可选）
             final_type     TEXT,               -- 最终推断的 MBTI 类型（如 INFP）
             confidence     REAL DEFAULT 0.0,   -- 置信度 0.0~1.0
-            dimensions     TEXT,               -- 四维打分 JSON {"EI":0.5,"SN":0.5,"TF":0.5,"JP":0.5}
+            dimensions     TEXT,               -- 四维打分 JSON
+            dimension_confidences TEXT,        -- 四维置信度 JSON
+                                            -- {"EI":0.5,"SN":0.5,
+                                            --  "TF":0.5,"JP":0.5}
             created_at     TEXT,
             updated_at     TEXT,
             archived       INTEGER DEFAULT 0   -- 0=活跃, 1=已封存
         )
     """)
+
+    cursor.execute("PRAGMA table_info(mbti_profiles)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+    for column_name in (
+        "gender",
+        "birth_yyyymm",
+        "occupation",
+        "dimension_confidences",
+    ):
+        if column_name not in existing_columns:
+            cursor.execute(f"ALTER TABLE mbti_profiles ADD COLUMN {column_name} TEXT")
+
+    # 2. 对话日志表
 
     # 2. 对话日志表
     cursor.execute("""
@@ -104,7 +138,8 @@ def init_db() -> None:
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sliding_window (
             user_id        TEXT PRIMARY KEY,
-            recent_scores  TEXT,               -- JSON 数组，存储最近 N 个 semantic_score
+            recent_scores  TEXT,               -- JSON 数组，存储最近 N 个
+                                            -- semantic_score
             window_size    INTEGER DEFAULT 5,
             last_updated   TEXT,
             FOREIGN KEY (user_id) REFERENCES mbti_profiles(user_id)
@@ -142,7 +177,10 @@ def init_db() -> None:
 def profile_exists(user_id: str) -> bool:
     """检查用户画像是否存在。"""
     conn = get_connection()
-    cursor = conn.execute("SELECT 1 FROM mbti_profiles WHERE user_id = ?", (user_id,))
+    cursor = conn.execute(
+        "SELECT 1 FROM mbti_profiles WHERE user_id = ?",
+        (user_id,),
+    )
     exists = cursor.fetchone() is not None
     conn.close()
     return exists
@@ -151,24 +189,55 @@ def profile_exists(user_id: str) -> bool:
 def get_profile(user_id: str) -> dict | None:
     """获取用户画像，不存在返回 None。"""
     conn = get_connection()
-    cursor = conn.execute("SELECT * FROM mbti_profiles WHERE user_id = ?", (user_id,))
+    cursor = conn.execute(
+        "SELECT * FROM mbti_profiles WHERE user_id = ?",
+        (user_id,),
+    )
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
 
 
-def save_profile(user_id: str, name: str) -> None:
+def save_profile(
+    user_id: str,
+    name: str,
+    *,
+    gender: str | None = None,
+    birth_yyyymm: str | None = None,
+    occupation: str | None = None,
+) -> None:
     """创建新用户画像（首次触发时调用）。"""
     from datetime import datetime
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_connection()
     conn.execute(
         """
-        INSERT OR IGNORE INTO mbti_profiles (user_id, name, dimensions, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO mbti_profiles
+            (
+                user_id,
+                name,
+                gender,
+                birth_yyyymm,
+                occupation,
+                dimension_confidences,
+                dimensions,
+                created_at,
+                updated_at
+            )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (user_id, name, '{"EI":0.5,"SN":0.5,"TF":0.5,"JP":0.5}', now, now),
+        (
+            user_id,
+            name,
+            gender,
+            birth_yyyymm,
+            occupation,
+            '{"EI":0.0,"SN":0.0,"TF":0.0,"JP":0.0}',
+            '{"EI":0.5,"SN":0.5,"TF":0.5,"JP":0.5}',
+            now,
+            now,
+        ),
     )
     conn.commit()
     conn.close()
@@ -176,17 +245,30 @@ def save_profile(user_id: str, name: str) -> None:
 
 def update_profile(
     user_id: str,
-    final_type: str = None,
-    confidence: float = None,
-    dimensions: str = None,
-    archived: int = None,
+    final_type: str | None = None,
+    confidence: float | None = None,
+    dimensions: str | None = None,
+    dimension_confidences: str | None = None,
+    archived: int | None = None,
+    gender: str | None = None,
+    birth_yyyymm: str | None = None,
+    occupation: str | None = None,
 ) -> None:
     """更新用户画像字段（仅更新传入的非 None 字段）。"""
     from datetime import datetime
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     fields, values = [], []
+    if gender is not None:
+        fields.append("gender = ?")
+        values.append(gender)
+    if birth_yyyymm is not None:
+        fields.append("birth_yyyymm = ?")
+        values.append(birth_yyyymm)
+    if occupation is not None:
+        fields.append("occupation = ?")
+        values.append(occupation)
     if final_type is not None:
         fields.append("final_type = ?")
         values.append(final_type)
@@ -196,6 +278,9 @@ def update_profile(
     if dimensions is not None:
         fields.append("dimensions = ?")
         values.append(dimensions)
+    if dimension_confidences is not None:
+        fields.append("dimension_confidences = ?")
+        values.append(dimension_confidences)
     if archived is not None:
         fields.append("archived = ?")
         values.append(archived)
@@ -204,9 +289,8 @@ def update_profile(
     values.append(user_id)
 
     conn = get_connection()
-    conn.execute(
-        f"UPDATE mbti_profiles SET {', '.join(fields)} WHERE user_id = ?", values
-    )
+    query = f"UPDATE mbti_profiles SET {', '.join(fields)} WHERE user_id = ?"
+    conn.execute(query, values)
     conn.commit()
     conn.close()
 
@@ -217,11 +301,12 @@ def log_conversation(
     """记录一轮对话。"""
     from datetime import datetime
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_connection()
     conn.execute(
         """
-        INSERT INTO conversation_logs (user_id, topic, user_response, dimension, timestamp)
+        INSERT INTO conversation_logs
+            (user_id, topic, user_response, dimension, timestamp)
         VALUES (?, ?, ?, ?, ?)
         """,
         (user_id, topic, user_response, dimension, now),
@@ -236,11 +321,12 @@ def log_quality(
     """记录一轮质量评分。"""
     from datetime import datetime
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_connection()
     conn.execute(
         """
-        INSERT INTO quality_logs (user_id, token_score, semantic_score, confidence, timestamp)
+        INSERT INTO quality_logs
+            (user_id, token_score, semantic_score, confidence, timestamp)
         VALUES (?, ?, ?, ?, ?)
         """,
         (user_id, token_score, semantic_score, confidence, now),
@@ -290,11 +376,12 @@ def upsert_topic(
     """插入或更新话题（去重）。"""
     from datetime import datetime
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_connection()
     conn.execute(
         """
-        INSERT OR REPLACE INTO topic_pool (topic, dimension, source, created_at, expires_at)
+        INSERT OR REPLACE INTO topic_pool
+            (topic, dimension, source, created_at, expires_at)
         VALUES (?, ?, ?, ?, ?)
         """,
         (topic, dimension, source, now, expires_at),
@@ -316,7 +403,7 @@ def get_valid_topics(dimension: str = None, limit: int = 10) -> list[dict]:
     """
     from datetime import datetime
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     conn = get_connection()
     if dimension:
         cursor = conn.execute(
@@ -349,4 +436,4 @@ def get_valid_topics(dimension: str = None, limit: int = 10) -> list[dict]:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     init_db()
-    print(f"✅ 数据库初始化完成: {DB_PATH}")
+    print(f"✅ 数据库初始化完成: {_get_db_path()}")
