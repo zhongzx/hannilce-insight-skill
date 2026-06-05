@@ -16,21 +16,18 @@ from mbti.models import MBTIProfile, make_user_id
 # ---------------------------------------------------------------------------
 # 唤醒上下文压缩提示词
 # ---------------------------------------------------------------------------
-_WAKEUP_TEMPLATE = """你是一个专业的 MBTI 人格分析助手，正在恢复与用户的分析会话。
+_WAKEUP_TEMPLATE = """你是一位敏锐、善于倾听的朋友，正在继续与用户的对话。
 
 ## 用户基础信息
 - 姓名：{name}
 - 首次认证时间：{first_auth}
 
-## 已完成的分析
-- 当前推断类型：{mbti_type}（置信度 {confidence:.0%}）
-- 四维打分：E={ei:.0%} / S={sn:.0%} / T={tf:.0%} / J={jp:.0%}
-
 ## 最近对话历史（{count} 轮）
 {history}
 
 ## 当前任务
-继续分析，动态调整四维打分。避免重复已问过的问题，深入挖掘MBTI特征的细节表现。"""
+自然延续对话，提出开放式、口语化的问题。避免重复已问过的问题。
+如果用户刚才回答很短或明显敷衍，就换一个更轻松的新方向。"""
 
 
 def _format_history(profile: MBTIProfile, history: list[dict]) -> str:
@@ -40,15 +37,8 @@ def _format_history(profile: MBTIProfile, history: list[dict]) -> str:
 
     lines = []
     for i, log in enumerate(history[-10:], 1):  # 最多显示最近10轮
-        dim_label = {
-            "EI": "外向/内向",
-            "SN": "实感/直觉",
-            "TF": "思考/情感",
-            "JP": "判断/知觉",
-        }.get(log.get("dimension", ""), log.get("dimension", ""))
         lines.append(
-            f"  {i}. [维度:{dim_label}] 话题: {log['topic']}\n"
-            f"     用户回复: {log['user_response'][:80]}"
+            f"  {i}. 话题: {log['topic']}\n     用户回复: {log['user_response'][:120]}"
         )
     return "\n".join(lines)
 
@@ -64,7 +54,10 @@ class SessionManager:
 
     用法：
         sm = SessionManager()
-        ctx = sm.get_or_create(user_name="张三", timestamp_iso="2026-06-03T00:00:00Z")
+        ctx = sm.get_or_create(
+            user_name="张三",
+            timestamp_iso="2026-06-03T00:00:00Z",
+        )
         # ctx 包含 profile / history / system_prompt
     """
 
@@ -116,7 +109,8 @@ class SessionManager:
                     birth_yyyymm=birth_yyyymm,
                     occupation=occupation,
                 )
-                profile = models.MBTIProfile.from_db_row(db.get_profile(user_id))
+                profile_row = db.get_profile(user_id)
+                profile = models.MBTIProfile.from_db_row(profile_row)
 
         history = db.get_conversation_history(user_id, limit=20)
 
@@ -148,21 +142,11 @@ class SessionManager:
         profile = ctx["profile"]
         history = ctx["history"]
 
-        dims = profile.dimensions
-        mbti_type = profile.final_type or "（待推断）"
-        confidence = profile.confidence or 0.0
-
         history_text = _format_history(profile, history)
 
         return _WAKEUP_TEMPLATE.format(
             name=profile.name,
             first_auth=profile.created_at[:10],
-            mbti_type=mbti_type,
-            confidence=confidence,
-            ei=dims.EI,
-            sn=dims.SN,
-            tf=dims.TF,
-            jp=dims.JP,
             count=len(history),
             history=history_text,
         )
@@ -240,4 +224,78 @@ class SessionManager:
             dimension_confidences=profile.dimension_confidences.to_json(),
         )
 
+        return models.MBTIProfile.from_db_row(db.get_profile(user_id))
+
+    def update_from_dimension_signals(
+        self,
+        *,
+        user_id: str,
+        signals: dict[str, float],
+        evidence_strength: float,
+        session_confidence: float | None = None,
+    ) -> MBTIProfile:
+        profile_row = db.get_profile(user_id)
+        profile = models.MBTIProfile.from_db_row(profile_row)
+
+        evidence = max(0.0, min(1.0, float(evidence_strength)))
+        for key in ("EI", "SN", "TF", "JP"):
+            raw = signals.get(key, 0.0)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = 0.0
+
+            value = max(-1.0, min(1.0, value))
+            if abs(value) < 0.1:
+                continue
+
+            dim_enum = models.MBTIDimension(key)
+            score_01 = max(0.0, min(1.0, 0.5 + value / 2.0))
+            profile.dimensions.update(dim_enum, score_01)
+
+            confidence_signal = max(0.0, min(1.0, abs(value) * evidence))
+            profile.dimension_confidences.update(dim_enum, confidence_signal)
+
+        inferred_type = profile.dimensions.to_mbti_type()
+
+        history = db.get_conversation_history(user_id, limit=100)
+        base_conf = min(0.1 + len(history) * 0.05, 0.95)
+        profile_confidence = (
+            session_confidence if session_confidence is not None else base_conf
+        )
+
+        db.update_profile(
+            user_id,
+            dimensions=profile.dimensions.to_json(),
+            final_type=inferred_type,
+            confidence=profile_confidence,
+            dimension_confidences=profile.dimension_confidences.to_json(),
+        )
+
+        return models.MBTIProfile.from_db_row(db.get_profile(user_id))
+
+    def nudge_dimension_confidences(
+        self,
+        *,
+        user_id: str,
+        delta: float,
+        dimensions: tuple[str, ...] = ("EI", "SN", "TF", "JP"),
+    ) -> MBTIProfile:
+        profile_row = db.get_profile(user_id)
+        profile = models.MBTIProfile.from_db_row(profile_row)
+
+        for key in dimensions:
+            try:
+                dim_enum = models.MBTIDimension(key)
+            except ValueError:
+                continue
+
+            current = getattr(profile.dimension_confidences, dim_enum.value)
+            target = max(0.0, min(1.0, float(current) + float(delta)))
+            profile.dimension_confidences.update(dim_enum, target)
+
+        db.update_profile(
+            user_id,
+            dimension_confidences=profile.dimension_confidences.to_json(),
+        )
         return models.MBTIProfile.from_db_row(db.get_profile(user_id))

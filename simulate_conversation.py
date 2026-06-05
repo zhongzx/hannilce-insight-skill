@@ -174,10 +174,27 @@ def _choose_chat_answer(*, scenario: str, turn_index: int) -> str:
         return samples[turn_index % len(samples)]
 
     if scenario == "report":
-        return "/报告" if turn_index >= 2 else "最近挺忙的。"
+        if turn_index >= 6:
+            return "/报告"
+        samples = [
+            "最近挺忙的，但也还扛得住。",
+            "工作上有点挤压感，脑子停不下来。",
+            "我其实想把节奏放慢一点，但总有事推着走。",
+            "最近情绪有点钝，没啥大起伏。",
+            "我也说不上来具体怎么了，就是有点累。",
+            "如果能选，我更想先把手头最要紧的事收口。",
+        ]
+        return samples[turn_index % len(samples)]
 
     if scenario == "summary_deny":
-        return "还好。"
+        samples = [
+            "还好。",
+            "一般吧。",
+            "就那样。",
+            "没啥特别的。",
+            "最近挺忙的。",
+        ]
+        return samples[turn_index % len(samples)]
 
     if scenario == "happy":
         samples = [
@@ -563,9 +580,8 @@ def summarize_jsonl(path: str) -> int:
     print(f"types={json.dumps(type_counts, ensure_ascii=False)}")
     print(f"sources={json.dumps(source_counts, ensure_ascii=False)}")
     topic_question_ratio = question_topic_count / max(1, topic_count)
-    print(
-        f"topic_question_ratio={topic_question_ratio:.4f} (topic_count={topic_count})"
-    )
+    print(f"topic_question_ratio={topic_question_ratio:.4f}")
+    print(f"topic_count={topic_count}")
     print(f"topic_repeats={repeat_topics}")
 
     def _print_latency(name: str, xs: list[int]) -> None:

@@ -16,8 +16,13 @@ MBTI Insight Skill — 主入口模块
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 from datetime import UTC, datetime
+
+if __name__ == "__main__" and (__package__ is None or __package__ == ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from mbti import db
 from mbti.models import MBTIProfile, make_user_id
@@ -26,6 +31,7 @@ from mbti.session_manager import SessionManager
 from mbti.topic_generator_v2 import TopicGeneratorV2
 from openrouter_client import (
     call_chat_completion,
+    extract_first_json_object,
     load_openrouter_settings,
 )
 
@@ -142,129 +148,39 @@ _DIMENSION_INFO = {
     },
 }
 
-_MBTI_TYPE_DESCRIPTIONS = {
-    "INTJ": {
-        "name": "建筑师",
-        "traits": "- 战略思维者，拥有清晰的长远愿景\n- 独立、自主，信赖自己的判断\n- 对知识和能力的追求近乎苛刻\n- 善于发现系统中的漏洞和改进空间\n- 表达直接，不喜欢废话",
-        "career": "- 适合：战略咨询、系统架构、科研、金融分析\n- 优势领域：长期规划、复杂问题解决",
-        "relationship": "- 深度对话胜于浅层闲聊\n- 忠诚但以行动表达而非言语\n- 需要空间独处来恢复能量",
-        "growth": "- 注意表达情感需求，避免过度理性化\n- 学会接受不完美的计划\n- 培养耐心，理解他人节奏不同",
-    },
-    "INTP": {
-        "name": "逻辑学家",
-        "traits": "- 极度理性，痴迷于逻辑和推理\n- 充满好奇心，追求知识和理解\n- 擅长抽象思维和理论构建\n- 独立思考，不盲从权威\n- 表达精确但有时忽略社交细节",
-        "career": "- 适合：科研、编程、哲学、数据分析\n- 优势领域：理论创新、系统设计",
-        "relationship": "- 重视智识上的连接\n- 表达感情含蓄，需要时间表达感受\n- 独处时最能展现真实自我",
-        "growth": "- 将思考转化为行动\n- 注意日常事务和组织管理\n- 主动表达欣赏和感谢",
-    },
-    "ENTJ": {
-        "name": "指挥官",
-        "traits": "- 天生的领导者，敢于决策\n- 战略眼光，善于规划全局\n- 直接、果断，不拖泥带水\n- 自信且有说服力\n- 追求效率和成果",
-        "career": "- 适合：企业管理、创业、法律、政治\n- 优势领域：战略决策、团队领导",
-        "relationship": "- 沟通直接，有时忽略他人感受\n- 忠诚且愿意为重要的人付出\n- 需要能挑战自己的伴侣",
-        "growth": "- 练习倾听而非主导\n- 关注他人情绪而非只看结果\n- 学会接受自己的脆弱",
-    },
-    "ENTP": {
-        "name": "辩论家",
-        "traits": "- 头脑风暴高手，点子层出不穷\n- 善于发现弱点和漏洞\n- 热爱辩论和智识挑战\n- 多才多艺，兴趣广泛\n- 不喜欢重复和例行公事",
-        "career": "- 适合：创业、投资、咨询、媒体\n- 优势领域：创新、业务拓展",
-        "relationship": "- 喜欢有趣的精神对话\n- 善于社交但深度有限\n- 需要能跟上思维节奏的伙伴",
-        "growth": "- 将想法落地而非一直探索新点子\n- 培养专注力和耐心\n- 学会坚持做完事情",
-    },
-    "INFJ": {
-        "name": "提倡者",
-        "traits": "- 理想主义者，有坚定的价值观\n- 洞察力强，善于理解他人\n- 安静而有深度\n- 追求意义和使命\n- 有强烈的道德感",
-        "career": "- 适合：心理咨询、教育、艺术、公益\n- 优势领域：帮助他人、创造性表达",
-        "relationship": "- 深度连接的渴望者\n- 善于倾听，默默支持他人\n- 需要独处时间来充电",
-        "growth": "- 学会说“不”，保护自己的能量\n- 接受不完美和妥协\n- 表达需求而非总是隐忍",
-    },
-    "INFP": {
-        "name": "调停者",
-        "traits": "- 理想主义者，充满热情\n- 敏感且富有同理心\n- 重视个人价值观和真实自我\n- 善于文字和艺术表达\n- 安静但内心世界丰富",
-        "career": "- 适合：写作、艺术、心理咨询、教育\n- 优势领域：创作、调解、理解人性",
-        "relationship": "- 追求灵魂层面的连接\n- 敏感细腻，需要被理解\n- 外表安静但内心炽热",
-        "growth": "- 行动力较弱，需设定具体目标\n- 学会处理冲突而非回避\n- 接纳现实的限制",
-    },
-    "ENFJ": {
-        "name": "主人公",
-        "traits": "- 天生的激励者，有魅力\n- 善于理解和支持他人\n- 有领导力，激励他人成长\n- 富有理想，有使命感\n- 热情且富有感染力",
-        "career": "- 适合：教育、管理、咨询、公益\n- 优势领域：团队领导、人才培养",
-        "relationship": "- 关心他人需求，善于社交\n- 给予支持但有时忽略自己\n- 渴望被认可和欣赏",
-        "growth": "- 学会设立界限\n- 不要过度承担他人责任\n- 给自己留出恢复时间",
-    },
-    "ENFP": {
-        "name": "竞选者",
-        "traits": "- 热情洋溢，充满活力\n- 点子多，想象力丰富\n- 善于社交，有感染力\n- 适应力强，喜欢变化\n- 追求可能性和新体验",
-        "career": "- 适合：创意、市场、媒体、公关\n- 优势领域：创新、激励他人",
-        "relationship": "- 热情浪漫，重视精神交流\n- 需要自由和空间\n- 善于发现他人的潜力",
-        "growth": "- 专注力有限，需培养持续力\n- 学会处理细节和承诺\n- 不要害怕冲突和困难",
-    },
-    "ISTJ": {
-        "name": "物流师",
-        "traits": "- 负责任，可靠踏实\n- 注重细节，有组织性\n- 传统价值观的守护者\n- 做事有条理、有计划\n- 沉默寡言但信守承诺",
-        "career": "- 适合：会计、法律、行政、工程\n- 优势领域：执行、流程优化",
-        "relationship": "- 行动表达爱意\n- 稳定、忠诚、可靠\n- 不善言辞但默默付出",
-        "growth": "- 接纳变化和新想法\n- 学会灵活处理问题\n- 表达情感而非压抑",
-    },
-    "ISFJ": {
-        "name": "守卫者",
-        "traits": "- 温暖、可靠、乐于助人\n- 注重传统和责任\n- 细心体贴，关注他人需求\n- 默默奉献，不求回报\n- 传统且有责任感",
-        "career": "- 适合：护理、教育、行政、服务\n- 优势领域：支持他人、维护稳定",
-        "relationship": "- 无条件的支持者和照顾者\n- 表达含蓄但行动证明一切\n- 重视长期关系的维护",
-        "growth": "- 学会接受感谢而非只付出\n- 设立健康的界限\n- 相信自己的价值和需求",
-    },
-    "ESTJ": {
-        "name": "总经理",
-        "traits": "- 果断、有执行力\n- 善于组织和领导\n- 重视规则和效率\n- 直接务实，结果导向\n- 传统价值的维护者",
-        "career": "- 适合：管理、法律、军事、行政\n- 优势领域：执行、运营、组织",
-        "relationship": "- 保护和照顾家人\n- 直接但真诚\n- 重视承诺和责任",
-        "growth": "- 学会欣赏不同的做事方式\n- 注意他人感受而非只看事实\n- 接受建议和批评",
-    },
-    "ESFJ": {
-        "name": "执政官",
-        "traits": "- 热情、社交、善于照顾人\n- 注重和谐和他人感受\n- 有责任感，乐于助人\n- 传统且有组织性\n- 喜欢被需要和认可",
-        "career": "- 适合：护理、教育、销售、人力资源\n- 优势领域：团队协调、服务他人",
-        "relationship": "- 付出型的伴侣和朋友\n- 重视仪式感和节日\n- 需要被感谢和认可",
-        "growth": "- 学会说不\n- 不过度在意他人的看法\n- 照顾自己的需求",
-    },
-    "ISTP": {
-        "name": "鉴赏家",
-        "traits": "- 务实、动手能力强\n- 善于分析问题和解决\n- 独立、自主、灵活\n- 喜欢探索事物如何运作\n- 安静、内敛但行动派",
-        "career": "- 适合：工程、技术、手工艺、军事\n- 优势领域：实际操作、问题解决",
-        "relationship": "- 行动而非言语表达\n- 需要空间和自由\n- 深度连接需要时间",
-        "growth": "- 表达情感和想法\n- 考虑长远影响\n- 培养耐心和承诺",
-    },
-    "ISFP": {
-        "name": "探险家",
-        "traits": "- 艺术感强，善于审美\n- 安静、温柔、有同理心\n- 活在当下，享受体验\n- 灵活、适应力强\n- 重视个人空间和自由",
-        "career": "- 适合：艺术、设计、手工艺、音乐\n- 优势领域：创意、美感、体验",
-        "relationship": "- 浪漫且细腻\n- 用行动表达爱\n- 需要空间和理解",
-        "growth": "- 克服犹豫，勇敢行动\n- 学会应对批评\n- 表达想法和感受",
-    },
-    "ESTP": {
-        "name": "企业家",
-        "traits": "- 精力充沛，喜欢冒险\n- 善于即兴发挥\n- 务实、直接、有说服力\n- 享受当下的刺激\n- 社交能力强，人脉广",
-        "career": "- 适合：销售、创业、金融、演艺\n- 优势领域：谈判、危机处理",
-        "relationship": "- 热情有趣的生活伙伴\n- 需要新鲜感\n- 直接沟通，不喜欢绕弯子",
-        "growth": "- 培养专注力和耐心\n- 考虑行动的长远影响\n- 学会倾听而非总在说话",
-    },
-    "ESFP": {
-        "name": "表演者",
-        "traits": "- 活泼开朗，社交达人\n- 享受关注，善于娱乐他人\n- 活在当下，及时行乐\n- 热情、有感染力\n- 实际且有审美",
-        "career": "- 适合：表演、销售、市场、公关\n- 优势领域：展示、娱乐、连接",
-        "relationship": "- 热情洋溢的伴侣\n- 喜欢庆祝和新鲜感\n- 需要肯定和关注",
-        "growth": "- 学会计划和承诺\n- 面对困难不要逃避\n- 培养深度而非广度",
-    },
-}
 
-# 默认类型描述（兜底）
-_DEFAULT_TYPE_DESC = {
-    "name": "待确定",
-    "traits": "- 人格特征待分析\n- 需要更多对话数据",
-    "career": "- 职业倾向待分析",
-    "relationship": "- 人际风格待分析",
-    "growth": "- 成长建议待分析",
-}
+def _fallback_report_sections(
+    profile: MBTIProfile,
+    *,
+    openrouter_hint: str,
+) -> dict[str, str]:
+    dims = profile.dimensions
+    traits: list[str] = []
+    if dims.EI < 0.45:
+        traits.append("- 更倾向先自己消化，想清楚再表达")
+    elif dims.EI > 0.55:
+        traits.append("- 在互动中更容易打开思路，表达更顺")
+    if dims.SN < 0.45:
+        traits.append("- 更关注可能性与整体脉络，喜欢从意义出发")
+    elif dims.SN > 0.55:
+        traits.append("- 更关注事实与细节，偏好可落地的推进方式")
+    if dims.TF < 0.45:
+        traits.append("- 更容易先感受人和关系，再做判断")
+    elif dims.TF > 0.55:
+        traits.append("- 更容易先看逻辑与原则，再决定取舍")
+    if dims.JP < 0.45:
+        traits.append("- 更偏好留弹性，边走边调整")
+    elif dims.JP > 0.55:
+        traits.append("- 更偏好提前规划，把事情理顺")
+
+    character_traits = "\n".join(traits) if traits else "- 信息不足，需要更多对话线索"
+    return {
+        "type_fullname": "简版",
+        "character_traits": character_traits,
+        "career_tendencies": openrouter_hint,
+        "relationship_style": openrouter_hint,
+        "growth_suggestions": openrouter_hint,
+    }
 
 
 def _render_report(profile: MBTIProfile, round_count: int) -> str:
@@ -274,7 +190,7 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
     if settings:
         history = db.get_conversation_history(profile.user_id, limit=50)
         history_lines = "\n".join(
-            f"- Q: {item.get('topic', '')}\n  A: {item.get('user_response', '')}"
+            (f"- Q: {item.get('topic', '')}\n  A: {item.get('user_response', '')}")
             for item in history
         )
         prompt = (
@@ -310,10 +226,20 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
         )
         if content:
             return content
+        openrouter_hint = (
+            "- OpenRouter 调用失败，已回退为简版报告；如需更详细内容，请检查 "
+            "OPENROUTER_API_KEY/OPENROUTER_MODEL、网络连通性或额度后重试，"
+            "或继续对话补充线索"
+        )
+    else:
+        openrouter_hint = (
+            "- 如需更详细内容，请设置 OPENROUTER_API_KEY/OPENROUTER_MODEL，"
+            "或继续对话补充线索"
+        )
 
-    type_info = _MBTI_TYPE_DESCRIPTIONS.get(mbti_type, _DEFAULT_TYPE_DESC)
+    sections = _fallback_report_sections(profile, openrouter_hint=openrouter_hint)
 
-    def dim_info(dim_name: str, letter: str) -> tuple:
+    def dim_info(dim_name: str, letter: str) -> tuple[str, str, str]:
         info = _DIMENSION_INFO.get(dim_name, {}).get(letter, {})
         bar = info.get("bar", "⚪")
         desc = info.get("desc", "")
@@ -329,7 +255,7 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
     return _REPORT_TEMPLATE.format(
         name=profile.name,
         mbti_type=mbti_type,
-        type_fullname=type_info["name"],
+        type_fullname=sections["type_fullname"],
         confidence=profile.confidence or 0,
         round_count=round_count,
         ei_label=ei_label,
@@ -348,10 +274,10 @@ def _render_report(profile: MBTIProfile, round_count: int) -> str:
         jp_bar=jp_bar,
         jp_pct=dims.JP,
         jp_desc=jp_desc,
-        character_traits=type_info["traits"],
-        career_tendencies=type_info["career"],
-        relationship_style=type_info["relationship"],
-        growth_suggestions=type_info["growth"],
+        character_traits=sections["character_traits"],
+        career_tendencies=sections["career_tendencies"],
+        relationship_style=sections["relationship_style"],
+        growth_suggestions=sections["growth_suggestions"],
     )
 
 
@@ -391,6 +317,15 @@ class InsightSkill:
         self._qc: QualityController | None = None
         self._current_topic: str | None = None
         self._current_dimension: str | None = None
+        self._last_summary: str | None = None
+        self._pending_profile_field: str | None = None
+        self._skipped_profile_fields: set[str] = set()
+        self._pending_birth_confirmation: str | None = None
+        self._awaiting_summary_feedback: bool = False
+        self._last_user_id: str | None = None
+        self._unified_fail_streak: int = 0
+        self._unified_last_error_code: str | None = None
+        self._unified_last_error_excerpt: str | None = None
 
     # -------------------------------------------------------------------------
     # 公共接口
@@ -430,6 +365,9 @@ class InsightSkill:
             }
         """
         self.init()
+        self._unified_fail_streak = 0
+        self._unified_last_error_code = None
+        self._unified_last_error_excerpt = None
 
         # 获取/创建会话
         ctx = self._sm.get_or_create(
@@ -441,37 +379,51 @@ class InsightSkill:
         )
         profile: MBTIProfile = ctx["profile"]
         is_new = ctx["is_new"]
+        history = db.get_conversation_history(profile.user_id, limit=5)
 
-        avoid_dimensions = [
-            key
-            for key, value in profile.dimension_confidences.model_dump().items()
-            if isinstance(value, float) and value >= 0.7
-        ]
-
-        next_topic = self._tg.get_next(
-            user_id=profile.user_id,
-            avoid_dimensions=avoid_dimensions,
-        )
-        topic = next_topic["topic"]
-        dimension = next_topic["dimension"]
-        topic_source = next_topic.get("source")
+        if not history:
+            next_field = self._next_profile_field_to_collect(profile)
+            if next_field is not None:
+                topic = self._build_profile_question(
+                    user_name=user_name,
+                    field=next_field,
+                )
+                self._pending_profile_field = next_field
+                dimension = ""
+                topic_source = "collect_profile"
+            else:
+                next_topic = self._tg.get_next(user_id=profile.user_id)
+                topic = next_topic["topic"]
+                dimension = next_topic.get("dimension", "")
+                topic_source = next_topic.get("source")
+        else:
+            next_topic = self._tg.get_next(user_id=profile.user_id)
+            topic = next_topic["topic"]
+            dimension = next_topic.get("dimension", "")
+            topic_source = next_topic.get("source")
         self._current_topic = topic
-        self._current_dimension = dimension
+        self._current_dimension = None
 
         # 构建唤醒上下文（新会话不返回，老会话返回）
         wakeup_context = ""
         if not is_new:
-            wakeup_context = self._sm.build_wakeup_context(user_name, timestamp_iso)
+            wakeup_context = self._sm.build_wakeup_context(
+                user_name,
+                timestamp_iso,
+            )
 
-        return {
+        debug_enabled = os.environ.get("MBTI_DEBUG") == "1"
+        result: dict[str, object] = {
             "type": "next_topic",
             "topic": topic,
             "dimension": dimension,
             "topic_source": topic_source,
             "is_new": is_new,
-            "profile": profile.to_summary(),
             "wakeup_context": wakeup_context,
         }
+        if debug_enabled:
+            result["profile"] = profile.to_summary()
+        return result
 
     def handle_response(
         self,
@@ -504,13 +456,121 @@ class InsightSkill:
             self.init()
 
         user_id = make_user_id(user_name, timestamp_iso)
+        self._last_user_id = user_id
+        debug_enabled = os.environ.get("MBTI_DEBUG") == "1"
+
+        if self._awaiting_summary_feedback and self._last_summary is not None:
+            handled = self._handle_summary_feedback(
+                user_id=user_id,
+                user_response=user_response,
+            )
+            if handled is not None:
+                if debug_enabled:
+                    profile_row = db.get_profile(user_id) or {}
+                    if isinstance(profile_row, dict) and profile_row:
+                        handled["profile"] = MBTIProfile.from_db_row(
+                            profile_row
+                        ).to_summary()
+                return handled
+
+        if self._pending_profile_field is not None:
+            profile_row = db.get_profile(user_id)
+            if not profile_row:
+                return {
+                    "type": "error",
+                    "error": "missing_profile",
+                    "message": "会话状态缺失，请重新发送 /MBTI <姓名> 触发。",
+                }
+
+            profile = MBTIProfile.from_db_row(profile_row)
+            if self._is_report_request(user_response):
+                self._pending_profile_field = None
+                next_topic = self._tg.get_next(user_id=user_id)
+                topic = next_topic["topic"]
+                self._current_topic = topic
+                self._current_dimension = None
+                result: dict[str, object] = {
+                    "type": "next_topic",
+                    "topic": topic,
+                    "dimension": "",
+                    "topic_source": next_topic.get("source"),
+                    "summary": None,
+                    "report": None,
+                    "message": None,
+                    "should_archive": False,
+                    "archive_reason": "继续",
+                }
+                if debug_enabled:
+                    result["profile"] = profile.to_summary()
+                return result
+
+            handled = self._handle_profile_collection_turn(
+                user_id=user_id,
+                user_name=user_name,
+                profile=profile,
+                user_response=user_response,
+            )
+            if handled is not None:
+                if debug_enabled:
+                    handled["profile"] = MBTIProfile.from_db_row(
+                        db.get_profile(user_id) or profile_row
+                    ).to_summary()
+                return handled
+
+        current_topic = self._current_topic or ""
+        can_attempt_unified = (
+            self._is_env_enabled("MBTI_ENABLE_UNIFIED_TURN", default=False)
+            and load_openrouter_settings() is not None
+            and bool(current_topic.strip())
+            and not self._is_report_request(user_response)
+        )
+        unified = None
+        if can_attempt_unified:
+            unified = self._try_unified_llm_turn(
+                user_id=user_id,
+                current_topic=current_topic,
+                user_response=user_response,
+            )
+            if unified is None:
+                self._unified_fail_streak += 1
+                if self._unified_fail_streak >= self._unified_max_failures():
+                    self._unified_fail_streak = 0
+                    archive_reason = (
+                        self._unified_last_error_code or "unified_llm_invalid_output"
+                    )
+                    result: dict[str, object] = {
+                        "type": "archive",
+                        "topic": None,
+                        "dimension": None,
+                        "topic_source": "openrouter_unified",
+                        "summary": None,
+                        "report": None,
+                        "message": (
+                            "我这边生成下一步时连续出现异常，为了不浪费你时间，"
+                            "我先暂停这次对话。你稍后再试一次，或重新发送 /MBTI "
+                            f"{user_name} 重新开始。"
+                        ),
+                        "should_archive": True,
+                        "archive_reason": archive_reason,
+                    }
+                    if debug_enabled:
+                        result["unified_error"] = {
+                            "code": archive_reason,
+                            "excerpt": self._unified_last_error_excerpt,
+                        }
+                    return result
+            else:
+                self._unified_fail_streak = 0
+        else:
+            self._unified_fail_streak = 0
 
         # 1. 质量评估
         quality_result = self._qc.evaluate_round(
             user_id=user_id,
-            topic=self._current_topic or "",
+            topic=current_topic,
             user_response=user_response,
-            dimension=self._current_dimension,
+            dimension=None,
+            llm_semantic_score=unified["semantic_score"] if unified else None,
         )
         token_score = quality_result["token_score"]
         semantic_score = quality_result["semantic_score"]
@@ -524,71 +584,83 @@ class InsightSkill:
             user_id=user_id,
             topic=self._current_topic or "",
             user_response=user_response,
-            dimension=self._current_dimension or "",
+            dimension="",
             token_score=token_score,
             semantic_score=semantic_score,
             confidence=confidence,
         )
 
-        # 3. 更新维度分值
-        # 从用户回复中提取维度倾向（这里需要 LLM 辅助，后续优化）
-        # 暂时用语义分数作为维度更新的参考信号
-        profile = self._sm.update_dimensions(
+        if unified and unified["dimension_signals"] is not None:
+            signals = unified["dimension_signals"]
+        else:
+            signals = self._qc.analyze_dimension_signals(
+                user_id=user_id,
+                topic=self._current_topic or "",
+                user_response=user_response,
+            )
+        evidence_strength = 0.6
+        if isinstance(round_score, float):
+            evidence_strength = 0.4 + 0.6 * max(0.0, min(1.0, round_score))
+        profile = self._sm.update_from_dimension_signals(
             user_id=user_id,
-            dimension=self._current_dimension or "EI",
-            score=(semantic_score * 0.6 + token_score * 0.4),  # 综合评分更新维度
-            round_score=float(round_score) if isinstance(round_score, float) else None,
+            signals=signals,
+            evidence_strength=evidence_strength,
             session_confidence=confidence,
         )
 
         # 4. 检查是否应输出报告
         round_count = len(db.get_conversation_history(user_id, limit=100))
         report = None
+        summary = None
         topic = None
         dimension = None
         next_topic_source = None
         message = None
-        is_finish = should_archive and archive_reason == "达成结束条件"
+        want_report = self._is_report_request(user_response)
 
-        if should_archive:
-            if is_finish:
-                report = _render_report(profile, round_count)
-            else:
-                message = (
-                    "本次对话质量波动较大，为避免误判，我先暂停本次测评。"
-                    "你可以稍后重新触发再继续。"
-                )
-        else:
-            # 获取下一个话题
-            avoid_dimensions = [
-                key
-                for key, value in profile.dimension_confidences.model_dump().items()
-                if isinstance(value, float) and value >= 0.7
-            ]
-            next_topic = self._tg.get_next(
-                user_id=user_id,
-                avoid_dimensions=avoid_dimensions,
-            )
-            topic = next_topic["topic"]
-            dimension = next_topic["dimension"]
-            next_topic_source = next_topic.get("source")
-            self._current_topic = topic
-            self._current_dimension = dimension
-
-        if is_finish:
+        if want_report:
+            report = _render_report(profile, round_count)
             result_type = "report"
         elif should_archive:
+            message = "这会儿我们聊得有点断，我先停一下。你想继续随时告诉我。"
             result_type = "archive"
         else:
-            result_type = "next_topic"
+            if self._should_give_light_summary(user_id, profile):
+                summary = self._generate_light_summary(
+                    user_id=user_id,
+                    profile=profile,
+                )
+                self._last_summary = summary
+                self._awaiting_summary_feedback = True
+                result_type = "summary"
+            else:
+                if unified and unified["next_topic"] is not None:
+                    topic = unified["next_topic"]
+                    dimension = ""
+                    next_topic_source = "openrouter_unified"
+                else:
+                    next_topic = self._tg.get_next(user_id=user_id)
+                    topic = next_topic["topic"]
+                    dimension = next_topic.get("dimension", "")
+                    next_topic_source = next_topic.get("source")
+                self._current_topic = topic
+                self._current_dimension = None
+                result_type = "next_topic"
 
-        return {
+        result: dict[str, object] = {
             "type": result_type,
             "topic": topic,
             "dimension": dimension,
             "topic_source": next_topic_source,
-            "profile": profile.to_summary(),
-            "quality": {
+            "summary": summary,
+            "report": report,
+            "message": message,
+            "should_archive": should_archive,
+            "archive_reason": archive_reason,
+        }
+        if debug_enabled:
+            result["profile"] = profile.to_summary()
+            result["quality"] = {
                 "token_score": token_score,
                 "semantic_score": semantic_score,
                 "semantic_source": quality_result.get("semantic_source"),
@@ -597,12 +669,756 @@ class InsightSkill:
                     "repeat_contradiction_score"
                 ),
                 "round_score": quality_result.get("round_score"),
-            },
-            "report": report,
-            "message": message,
-            "should_archive": should_archive,
-            "archive_reason": archive_reason,
+            }
+            result["dimension_signals"] = signals
+        return result
+
+    def _is_env_enabled(self, name: str, *, default: bool) -> bool:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        cleaned = raw.strip().lower()
+        return cleaned not in {"0", "false", "off", "no"}
+
+    def _unified_max_failures(self) -> int:
+        raw = os.environ.get("MBTI_UNIFIED_MAX_FAILS")
+        if not raw:
+            return 3
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            return 3
+        return max(1, min(5, value))
+
+    def _set_unified_error(self, code: str, excerpt: str | None) -> None:
+        self._unified_last_error_code = code
+        if excerpt:
+            self._unified_last_error_excerpt = excerpt.strip()[:240]
+        else:
+            self._unified_last_error_excerpt = None
+
+    def _is_unified_next_topic_valid(self, text: str) -> bool:
+        t = text.strip()
+        if not t:
+            return False
+        if len(t) > 36:
+            return False
+        if "MBTI" in t or "维度" in t:
+            return False
+        if any(w in t for w in ("你好", "请继续", "好的", "明白了")):
+            return False
+        if t.count("?") + t.count("？") > 1:
+            return False
+        if re.search(r"[A-Za-z]", t):
+            return False
+        if "?" in t or "？" in t:
+            return True
+        if t.endswith(("吗", "呢", "呀", "么", "吧")):
+            return True
+        return bool(re.search(r"(说说|聊聊|讲讲|展开|具体|细说)", t))
+
+    def _try_unified_llm_turn(
+        self,
+        *,
+        user_id: str,
+        current_topic: str,
+        user_response: str,
+    ) -> dict[str, object] | None:
+        if not self._is_env_enabled("MBTI_ENABLE_UNIFIED_TURN", default=False):
+            return None
+        settings = load_openrouter_settings()
+        if not settings:
+            return None
+        if not current_topic.strip():
+            return None
+        if self._is_report_request(user_response):
+            return None
+
+        history = db.get_conversation_history(user_id, limit=12)
+        history_lines = "\n".join(
+            (
+                f"- Q: {item.get('topic', '')}\n"
+                f"  A: {str(item.get('user_response', ''))[:120]}"
+            )
+            for item in history[-6:]
+        )
+        prompt = (
+            "你将一次性输出 JSON，用于驱动下一轮对话与后台评估。\n\n"
+            "你必须只输出 JSON（不要解释、不要代码块）。\n\n"
+            "输出 schema：\n"
+            "{\n"
+            '  "next_topic": "一行中文口语对话推进（<=30字，最多1个问号）",\n'
+            '  "dimension_signals": {"EI":0.0,"SN":0.0,"TF":0.0,"JP":0.0},\n'
+            '  "semantic_score": 0.0\n'
+            "}\n\n"
+            "字段要求：\n"
+            "- next_topic：自然聊天口吻，可包含一句共情/复述 + 一个简短问题；不要采访腔；不要夹英文。\n"
+            "- dimension_signals：范围 -1.0~+1.0，0 表示无信号；只从文本可见表达提取。\n"
+            "- semantic_score：0.0~1.0，衡量本轮回答是否具体、真诚、连贯、并与问题相关。\n\n"
+            f"最近对话（供你避免重复）：\n{history_lines or '（无）'}\n\n"
+            f"本轮问题：{current_topic}\n\n"
+            f"用户回答：{user_response}\n"
+        )
+        content = call_chat_completion(
+            settings=settings,
+            messages=[
+                {"role": "system", "content": "你只输出严格 JSON。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+        if not content:
+            self._set_unified_error("unified_no_content", None)
+            return None
+        obj = extract_first_json_object(content)
+        if not isinstance(obj, dict):
+            self._set_unified_error("unified_json_parse_failed", content)
+            return None
+
+        next_topic_raw = obj.get("next_topic")
+        next_topic = None
+        if isinstance(next_topic_raw, str):
+            cleaned = next_topic_raw.strip().splitlines()[0].strip()
+            cleaned = cleaned.strip(" \"'“”‘’")
+            if cleaned and self._is_unified_next_topic_valid(cleaned):
+                next_topic = cleaned
+        if next_topic is None:
+            raw_excerpt = (
+                next_topic_raw.strip()[:240]
+                if isinstance(next_topic_raw, str)
+                else None
+            )
+            self._set_unified_error("unified_next_topic_invalid", raw_excerpt)
+            return None
+
+        semantic_raw = obj.get("semantic_score")
+        semantic_score = None
+        if isinstance(semantic_raw, (int, float)):
+            semantic_score = float(semantic_raw)
+        elif isinstance(semantic_raw, str):
+            try:
+                semantic_score = float(semantic_raw.strip())
+            except ValueError:
+                semantic_score = None
+        if semantic_score is not None:
+            semantic_score = max(0.0, min(1.0, semantic_score))
+
+        sig_raw = obj.get("dimension_signals")
+        dim_signals = None
+        if isinstance(sig_raw, dict):
+            parsed: dict[str, float] = {}
+            for key in ("EI", "SN", "TF", "JP"):
+                v = sig_raw.get(key)
+                if isinstance(v, (int, float)):
+                    value = float(v)
+                elif isinstance(v, str):
+                    try:
+                        value = float(v.strip())
+                    except ValueError:
+                        value = 0.0
+                else:
+                    value = 0.0
+                parsed[key] = max(-1.0, min(1.0, value))
+            dim_signals = parsed
+
+        self._set_unified_error("unified_ok", None)
+
+        return {
+            "next_topic": next_topic,
+            "semantic_score": semantic_score,
+            "dimension_signals": dim_signals,
         }
+
+    def _is_report_request(self, text: str) -> bool:
+        cleaned = text.strip()
+        if not cleaned:
+            return False
+        return bool(
+            re.search(r"^/(报告|report)\b", cleaned, flags=re.IGNORECASE)
+            or re.search(r"(分析)?报告", cleaned)
+            or re.search(r"(详细|完整版|完整).*?(分析|报告)", cleaned)
+            or re.search(r"(给我|生成|输出).{0,6}(报告|分析)", cleaned)
+        )
+
+    def _handle_summary_feedback(
+        self,
+        *,
+        user_id: str,
+        user_response: str,
+    ) -> dict[str, object] | None:
+        text = user_response.strip()
+        if not text:
+            return None
+
+        profile_row = db.get_profile(user_id)
+        if not profile_row:
+            return None
+        profile = MBTIProfile.from_db_row(profile_row)
+
+        if self._is_report_request(text):
+            self._awaiting_summary_feedback = False
+            self._last_summary = None
+            report = _render_report(
+                profile,
+                len(db.get_conversation_history(user_id, limit=100)),
+            )
+            return {
+                "type": "report",
+                "topic": None,
+                "dimension": None,
+                "topic_source": None,
+                "summary": None,
+                "report": report,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "用户请求报告",
+            }
+
+        is_affirm = bool(re.search(r"^(对|是|嗯|差不多|挺准|基本是)$", text))
+        is_deny = bool(re.search(r"(不对|不太对|偏了|不是|相反|不准|误会)", text))
+
+        if is_affirm:
+            profile = self._sm.nudge_dimension_confidences(
+                user_id=user_id,
+                delta=0.05,
+            )
+        elif is_deny:
+            profile = self._sm.nudge_dimension_confidences(
+                user_id=user_id,
+                delta=-0.05,
+            )
+
+        signals = self._qc.analyze_dimension_signals(
+            user_id=user_id,
+            topic=self._last_summary or "",
+            user_response=text,
+        )
+        profile = self._sm.update_from_dimension_signals(
+            user_id=user_id,
+            signals=signals,
+            evidence_strength=0.3,
+            session_confidence=profile.confidence,
+        )
+
+        self._awaiting_summary_feedback = False
+        self._last_summary = None
+
+        if is_deny and len(text) < 15:
+            topic = "那我想听你说说：你更希望我怎么理解你？能举个最近的例子吗？"
+            self._current_topic = topic
+            self._current_dimension = None
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": "summary_followup",
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        next_topic = self._tg.get_next(user_id=user_id)
+        topic = next_topic["topic"]
+        self._current_topic = topic
+        self._current_dimension = None
+        return {
+            "type": "next_topic",
+            "topic": topic,
+            "dimension": "",
+            "topic_source": next_topic.get("source"),
+            "summary": None,
+            "report": None,
+            "message": None,
+            "should_archive": False,
+            "archive_reason": "继续",
+        }
+
+    def _next_profile_field_to_collect(
+        self,
+        profile: MBTIProfile,
+    ) -> str | None:
+        if "gender" not in self._skipped_profile_fields and not profile.gender:
+            return "gender"
+        if (
+            "birth_yyyymm" not in self._skipped_profile_fields
+            and not profile.birth_yyyymm
+        ):
+            return "birth_yyyymm"
+        if "occupation" not in self._skipped_profile_fields and not profile.occupation:
+            return "occupation"
+        return None
+
+    def _build_profile_question(self, *, user_name: str, field: str) -> str:
+        if field == "gender":
+            return (
+                f"{user_name}，我先确认一下，你更愿意我怎么称呼你？\n"
+                "1) 男\n"
+                "2) 女\n"
+                "3) 其他\n"
+                "4) 跳过\n"
+                "直接回数字即可。"
+            )
+        if field == "birth_yyyymm":
+            return (
+                "你大概是哪年哪月出生的呀？我只需要到年月就行。\n"
+                "请按 YYYYMM 输入（例：199803），或输入 0 跳过。"
+            )
+        if field == "occupation":
+            return (
+                "你现在主要做什么方向？选最接近的一项就行：\n"
+                "1) 技术/产品\n"
+                "2) 运营/市场\n"
+                "3) 金融\n"
+                "4) 教育\n"
+                "5) 医疗\n"
+                "6) 政企/事业单位\n"
+                "7) 其他\n"
+                "0) 跳过"
+            )
+        return "你可以简单说一句，也可以回“跳过”。"
+
+    def _handle_profile_collection_turn(
+        self,
+        *,
+        user_id: str,
+        user_name: str,
+        profile: MBTIProfile,
+        user_response: str,
+    ) -> dict[str, object] | None:
+        field = self._pending_profile_field
+        if field is None:
+            return None
+
+        if field == "birth_yyyymm" and self._pending_birth_confirmation is not None:
+            handled = self._handle_birth_confirmation(
+                user_id=user_id,
+                user_name=user_name,
+                profile=profile,
+                user_response=user_response,
+            )
+            if handled is not None:
+                return handled
+
+        if self._is_skip_response(user_response):
+            self._skipped_profile_fields.add(field)
+            self._pending_profile_field = None
+        else:
+            if field == "gender":
+                value = self._parse_gender(user_response)
+                if value is None:
+                    topic = (
+                        "我只想确认一下称呼偏好：回 1(男) / 2(女) / 3(其他) / 4(跳过)。"
+                    )
+                    self._current_topic = topic
+                    return {
+                        "type": "next_topic",
+                        "topic": topic,
+                        "dimension": "",
+                        "topic_source": "collect_profile_retry",
+                        "summary": None,
+                        "report": None,
+                        "message": None,
+                        "should_archive": False,
+                        "archive_reason": "继续",
+                    }
+                db.update_profile(user_id, gender=value)
+                self._pending_profile_field = None
+            elif field == "birth_yyyymm":
+                value = self._parse_birth_yyyymm(user_response)
+                if value is None:
+                    topic = "请按 YYYYMM 输入（例：199803），或输入 0 跳过。"
+                    self._current_topic = topic
+                    return {
+                        "type": "next_topic",
+                        "topic": topic,
+                        "dimension": "",
+                        "topic_source": "collect_profile_retry",
+                        "summary": None,
+                        "report": None,
+                        "message": None,
+                        "should_archive": False,
+                        "archive_reason": "继续",
+                    }
+                if self._needs_birth_confirmation(value):
+                    self._pending_birth_confirmation = value
+                    topic = self._build_birth_confirmation_question(value)
+                    self._current_topic = topic
+                    return {
+                        "type": "next_topic",
+                        "topic": topic,
+                        "dimension": "",
+                        "topic_source": "collect_profile_confirm",
+                        "summary": None,
+                        "report": None,
+                        "message": None,
+                        "should_archive": False,
+                        "archive_reason": "继续",
+                    }
+                db.update_profile(user_id, birth_yyyymm=value)
+                self._pending_profile_field = None
+            elif field == "occupation":
+                value = self._parse_occupation(user_response)
+                if value is None:
+                    topic = "回 1~7 选项或输入 0 跳过就行。"
+                    self._current_topic = topic
+                    return {
+                        "type": "next_topic",
+                        "topic": topic,
+                        "dimension": "",
+                        "topic_source": "collect_profile_retry",
+                        "summary": None,
+                        "report": None,
+                        "message": None,
+                        "should_archive": False,
+                        "archive_reason": "继续",
+                    }
+                if value == "其他":
+                    self._skipped_profile_fields.add(field)
+                    self._pending_profile_field = None
+                else:
+                    db.update_profile(user_id, occupation=value)
+                    self._pending_profile_field = None
+            else:
+                self._skipped_profile_fields.add(field)
+                self._pending_profile_field = None
+
+        updated_row = db.get_profile(user_id) or profile.model_dump()
+        updated_profile = (
+            MBTIProfile.from_db_row(updated_row)
+            if isinstance(updated_row, dict)
+            else profile
+        )
+        next_field = self._next_profile_field_to_collect(updated_profile)
+        if next_field is not None:
+            topic = self._build_profile_question(
+                user_name=user_name,
+                field=next_field,
+            )
+            self._pending_profile_field = next_field
+            self._current_topic = topic
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": "collect_profile",
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        next_topic = self._tg.get_next(user_id=user_id)
+        topic = next_topic["topic"]
+        self._current_topic = topic
+        self._current_dimension = None
+        return {
+            "type": "next_topic",
+            "topic": topic,
+            "dimension": "",
+            "topic_source": next_topic.get("source"),
+            "summary": None,
+            "report": None,
+            "message": None,
+            "should_archive": False,
+            "archive_reason": "继续",
+        }
+
+    def _is_skip_response(self, text: str) -> bool:
+        cleaned = text.strip().lower()
+        return cleaned in {
+            "0",
+            "4",
+            "跳过",
+            "不方便",
+            "不方便说",
+            "保密",
+            "略过",
+            "skip",
+        }
+
+    def _parse_gender(self, text: str) -> str | None:
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        if cleaned in {"1", "男"} or re.search(r"(男|男性|男生)$", cleaned):
+            return "男"
+        if cleaned in {"2", "女"} or re.search(r"(女|女性|女生)$", cleaned):
+            return "女"
+        if cleaned in {"3", "其他"} or re.search(r"(其他|非二元|不确定)$", cleaned):
+            return "其他"
+        return None
+
+    def _parse_birth_yyyymm(self, text: str) -> str | None:
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        if cleaned == "0":
+            return None
+        match = re.search(
+            r"(18\d{2}|19\d{2}|20\d{2})\D{0,3}([01]?\d)",
+            cleaned,
+        )
+        if not match:
+            match = re.search(r"^(18\d{2}|19\d{2}|20\d{2})([01]\d)$", cleaned)
+        if not match:
+            return None
+        year = int(match.group(1))
+        month = int(match.group(2))
+        if month < 1 or month > 12:
+            return None
+        now = datetime.now(UTC)
+        if year < 1850 or year > now.year:
+            return None
+        if year == now.year and month > now.month:
+            return None
+        return f"{year:04d}{month:02d}"
+
+    def _needs_birth_confirmation(self, yyyymm: str) -> bool:
+        try:
+            year = int(yyyymm[:4])
+            month = int(yyyymm[4:])
+        except ValueError:
+            return False
+
+        if month < 1 or month > 12:
+            return False
+
+        now = datetime.now(UTC)
+        age = now.year - year - (1 if (now.month, now.day) < (month, 1) else 0)
+        return age > 90
+
+    def _build_birth_confirmation_question(self, yyyymm: str) -> str:
+        year = yyyymm[:4]
+        month = yyyymm[4:]
+        return (
+            f"我看到你输入的是 {yyyymm}（{year}年{month}月）。"
+            "这个年份会让年龄非常大，我怕是你手滑了。\n"
+            "1) 确认就是这个\n"
+            "2) 重新输入\n"
+            "0) 跳过"
+        )
+
+    def _handle_birth_confirmation(
+        self,
+        *,
+        user_id: str,
+        user_name: str,
+        profile: MBTIProfile,
+        user_response: str,
+    ) -> dict[str, object] | None:
+        candidate = self._pending_birth_confirmation
+        if candidate is None:
+            return None
+
+        cleaned = user_response.strip().lower()
+        if cleaned in {"1", "确认", "是", "对"}:
+            db.update_profile(user_id, birth_yyyymm=candidate)
+            self._pending_birth_confirmation = None
+            self._pending_profile_field = None
+            updated_row = db.get_profile(user_id) or profile.model_dump()
+            updated_profile = MBTIProfile.from_db_row(updated_row)
+            next_field = self._next_profile_field_to_collect(updated_profile)
+            if next_field is not None:
+                topic = self._build_profile_question(
+                    user_name=user_name,
+                    field=next_field,
+                )
+                self._pending_profile_field = next_field
+                self._current_topic = topic
+                return {
+                    "type": "next_topic",
+                    "topic": topic,
+                    "dimension": "",
+                    "topic_source": "collect_profile",
+                    "summary": None,
+                    "report": None,
+                    "message": None,
+                    "should_archive": False,
+                    "archive_reason": "继续",
+                }
+
+            next_topic = self._tg.get_next(user_id=user_id)
+            topic = next_topic["topic"]
+            self._current_topic = topic
+            self._current_dimension = None
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": next_topic.get("source"),
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        if cleaned in {"2", "重输", "重新", "重新输入"}:
+            self._pending_birth_confirmation = None
+            topic = "那你再输一次吧：按 YYYYMM 输入（例：199803），或输入 0 跳过。"
+            self._current_topic = topic
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": "collect_profile_retry",
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        if cleaned in {"0", "跳过"}:
+            self._pending_birth_confirmation = None
+            self._skipped_profile_fields.add("birth_yyyymm")
+            self._pending_profile_field = None
+            next_field = self._next_profile_field_to_collect(profile)
+            if next_field is None:
+                return None
+
+            topic = self._build_profile_question(
+                user_name=user_name,
+                field=next_field,
+            )
+            self._pending_profile_field = next_field
+            self._current_topic = topic
+            return {
+                "type": "next_topic",
+                "topic": topic,
+                "dimension": "",
+                "topic_source": "collect_profile",
+                "summary": None,
+                "report": None,
+                "message": None,
+                "should_archive": False,
+                "archive_reason": "继续",
+            }
+
+        topic = "回 1(确认) / 2(重新输入) / 0(跳过) 就行。"
+        self._current_topic = topic
+        return {
+            "type": "next_topic",
+            "topic": topic,
+            "dimension": "",
+            "topic_source": "collect_profile_confirm_retry",
+            "summary": None,
+            "report": None,
+            "message": None,
+            "should_archive": False,
+            "archive_reason": "继续",
+        }
+
+    def _parse_occupation(self, text: str) -> str | None:
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        if cleaned == "0":
+            return None
+        mapping = {
+            "1": "技术/产品",
+            "2": "运营/市场",
+            "3": "金融",
+            "4": "教育",
+            "5": "医疗",
+            "6": "政企/事业单位",
+            "7": "其他",
+        }
+        if cleaned in mapping:
+            return mapping[cleaned]
+        if len(cleaned) > 60:
+            cleaned = cleaned[:60]
+        return cleaned
+
+    def _should_give_light_summary(
+        self,
+        user_id: str,
+        profile: MBTIProfile,
+    ) -> bool:
+        confidences = profile.dimension_confidences.model_dump()
+        if not all(
+            isinstance(confidences.get(k), float) and confidences[k] >= 0.7
+            for k in ("EI", "SN", "TF", "JP")
+        ):
+            return False
+
+        history = db.get_conversation_history(user_id, limit=3)
+        recent_answers = [
+            str(item.get("user_response", "")).strip() for item in history[-3:]
+        ]
+        low = sum(1 for t in recent_answers if self._is_low_engagement(t))
+        return low >= 2
+
+    def _is_low_engagement(self, text: str) -> bool:
+        cleaned = text.strip()
+        return len(cleaned) < 15 or bool(
+            re.search(
+                r"(不知道|随便|都行|还好|一般般|没啥|就这样|算了|不清楚)$",
+                cleaned,
+            )
+        )
+
+    def _generate_light_summary(
+        self,
+        *,
+        user_id: str,
+        profile: MBTIProfile,
+    ) -> str:
+        settings = load_openrouter_settings()
+        history = db.get_conversation_history(user_id, limit=12)
+        history_lines = "\n".join(
+            (
+                f"- 你问：{item.get('topic', '')}\n"
+                f"  对方：{str(item.get('user_response', ''))[:120]}"
+            )
+            for item in history[-8:]
+        )
+
+        profile_lines = [
+            f"性别：{profile.gender}" if profile.gender else None,
+            f"出生年月：{profile.birth_yyyymm}" if profile.birth_yyyymm else None,
+            f"职业：{profile.occupation}" if profile.occupation else None,
+        ]
+        profile_text_lines = [line for line in profile_lines if line]
+        profile_text = "\n".join(profile_text_lines) or "（无）"
+
+        if settings:
+            prompt = (
+                "你将输出一个非常轻量、口语化、试探性的总结，"
+                "用来确认你对对方的理解。"
+                "不要提 MBTI、人格类型、维度、测评、分析。\n\n"
+                "要求：\n"
+                "1) 2～4 句话，语气像朋友聊天\n"
+                "2) 用“我有个感觉/我可能理解偏了”的口吻\n"
+                "3) 最后一问邀请对方纠正或补充\n\n"
+                f"对方画像（仅作语气参考）：\n{profile_text}\n\n"
+                f"最近对话：\n{history_lines or '（无）'}\n"
+            )
+            content = call_chat_completion(
+                settings=settings,
+                messages=[
+                    {"role": "system", "content": "你只输出总结文本。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+            )
+            if content and content.strip():
+                return content.strip()
+
+        dims = profile.dimensions
+        lines: list[str] = ["和你聊下来，我有个不一定准的感觉："]
+        if dims.EI < 0.45:
+            lines.append("你遇到事更倾向先自己消化，想清楚了再说。")
+        elif dims.EI > 0.55:
+            lines.append("你在互动里更容易被点燃，聊着聊着思路就更清晰。")
+        if dims.JP < 0.45:
+            lines.append("你做事更喜欢留一点弹性，边走边调整。")
+        elif dims.JP > 0.55:
+            lines.append("你更喜欢把事情理顺、定下来，这样心里更踏实。")
+        return " ".join(lines) + " 你觉得我理解得对吗？哪里可能偏了？"
 
 
 # ---------------------------------------------------------------------------
@@ -706,25 +1522,34 @@ def _run_repl(user_name: str) -> int:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
 
-        quality = result.get("quality") or {}
-        profile = result.get("profile") or {}
-        dims = profile.get("dimensions") or {}
-        print(
-            "\n本轮评分："
-            f"token={quality.get('token_score')} "
-            f"semantic={quality.get('semantic_score')} "
-            f"(source={quality.get('semantic_source')}) "
-            f"repeat={quality.get('repeat_contradiction_score')} "
-            f"round={quality.get('round_score')} "
-            f"confidence={quality.get('confidence')}"
-        )
-        print(
-            "当前画像："
-            f"type={profile.get('mbti_type')} "
-            f"profile_conf={profile.get('confidence')} "
-            f"EI={dims.get('EI')} SN={dims.get('SN')} "
-            f"TF={dims.get('TF')} JP={dims.get('JP')}"
-        )
+        if result.get("type") == "summary":
+            summary = result.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                print(f"\n{summary.strip()}\n")
+            else:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            continue
+
+        if os.environ.get("MBTI_DEBUG") == "1":
+            quality = result.get("quality") or {}
+            profile = result.get("profile") or {}
+            dims = profile.get("dimensions") or {}
+            print(
+                "\n本轮评分："
+                f"token={quality.get('token_score')} "
+                f"semantic={quality.get('semantic_score')} "
+                f"(source={quality.get('semantic_source')}) "
+                f"repeat={quality.get('repeat_contradiction_score')} "
+                f"round={quality.get('round_score')} "
+                f"confidence={quality.get('confidence')}"
+            )
+            print(
+                "当前画像："
+                f"type={profile.get('mbti_type')} "
+                f"profile_conf={profile.get('confidence')} "
+                f"EI={dims.get('EI')} SN={dims.get('SN')} "
+                f"TF={dims.get('TF')} JP={dims.get('JP')}"
+            )
 
         next_topic = result.get("topic")
         next_topic_source = result.get("topic_source")
@@ -753,14 +1578,23 @@ def _extract_text(payload: dict[str, object]) -> str | None:
 
 
 def _extract_session_id(payload: dict[str, object]) -> str:
-    for key in ("session_id", "session", "conversation_id", "thread_id", "run_id"):
+    for key in (
+        "session_id",
+        "session",
+        "conversation_id",
+        "thread_id",
+        "run_id",
+    ):
         value = _as_str(payload.get(key))
         if value:
             return value
     return datetime.now(UTC).isoformat()
 
 
-def _extract_user_name(payload: dict[str, object], text: str | None) -> str | None:
+def _extract_user_name(
+    payload: dict[str, object],
+    text: str | None,
+) -> str | None:
     for key in ("user_name", "name", "user"):
         value = _as_str(payload.get(key))
         if value:
@@ -772,10 +1606,10 @@ def _extract_user_name(payload: dict[str, object], text: str | None) -> str | No
 
 def _is_trigger(text: str | None, payload: dict[str, object]) -> bool:
     event_type = _as_str(payload.get("type")) or _as_str(payload.get("event"))
-    if event_type:
-        return event_type.lower() in {"trigger", "command", "start"}
     if text:
         return parse_trigger(text) is not None
+    if event_type:
+        return event_type.lower() in {"trigger", "start"}
     return False
 
 
@@ -853,9 +1687,6 @@ def _run_skill_loop() -> int:
 
 if __name__ == "__main__":
     # 简单测试
-    import os
-    import sys
-
     raw_args = sys.argv[1:]
     if "--openrouter-model" in raw_args:
         idx = raw_args.index("--openrouter-model")
@@ -883,7 +1714,8 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print(
-        "用法: python insight_skill.py <姓名> | python insight_skill.py --repl <姓名>\n"
+        "用法: python insight_skill.py <姓名>\n"
+        "      python insight_skill.py --repl <姓名>\n"
         "可选参数: --openrouter-model <model> | --openrouter-config <path>"
     )
     sys.exit(2)
